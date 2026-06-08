@@ -1014,7 +1014,7 @@ export default function App() {
     const rows = fields.map((f) => {
       const { x, y, w, h } = convertToPdfCoordinates(f);
       const val = f.type === "checkbox" ? "0" : "";
-      return `${currentPage},${f.name},${f.type},${x},${y},${w},${h},${val}`;
+      return `${f.page || 1},${f.name},${f.type},${x},${y},${w},${h},${val}`;
     });
     return [header, ...rows].join("\n");
   };
@@ -1034,7 +1034,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `xdp_fields_page_${currentPage}.csv`);
+    link.setAttribute("download", `xdp_fields_spec_all.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -1423,7 +1423,7 @@ export default function App() {
 
                 {/* Form fields drawing/selection overlay layer */}
                 <div id="canvas-overlay" className="absolute inset-0 z-10">
-                  {fields.map((f) => {
+                  {fields.filter(f => !f.page || f.page === currentPage).map((f) => {
                     const isSelected = f.id === selectedFieldId;
                     
                     // Box colors mapping per type
@@ -1807,6 +1807,7 @@ export default function App() {
                 <table className="w-full text-left border-collapse text-[11px]" id="fields_table">
                   <thead className="bg-slate-50 border-b border-slate-200 text-[10px] text-slate-400 uppercase font-bold sticky top-0">
                     <tr>
+                      <th className="p-2">Page</th>
                       <th className="p-2">Name</th>
                       <th className="p-2">Type</th>
                       <th className="p-2 text-right">Points (X, Y, W, H)</th>
@@ -1822,8 +1823,14 @@ export default function App() {
                           id={`row_${f.id}`}
                           key={f.id}
                           className={`hover:bg-slate-50 cursor-pointer ${isSelected ? "bg-blue-50/70 text-blue-900 font-semibold" : "text-slate-600"}`}
-                          onClick={() => setSelectedFieldId(f.id)}
+                          onClick={() => {
+                            setSelectedFieldId(f.id);
+                            if (f.page && f.page !== currentPage) {
+                              setCurrentPage(f.page);
+                            }
+                          }}
                         >
+                          <td className="p-2 font-mono font-semibold text-slate-500 whitespace-nowrap">P. {f.page || 1}</td>
                           <td className="p-2 truncate font-mono max-w-[120px]">{f.name}</td>
                           <td className="p-2">
                             <span className="text-[10px] px-1.5 py-0.5 rounded-full capitalize font-semibold bg-slate-100">
