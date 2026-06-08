@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
   FileText, Upload, RefreshCw, ChevronLeft, ChevronRight, 
-  Trash2, Plus, Download, Copy, Check, Info, ZoomIn, ZoomOut, AlertCircle, Sparkles, FileSpreadsheet, Layers, Crop
+  Trash2, Plus, Download, Copy, Check, Info, ZoomIn, ZoomOut, AlertCircle, Sparkles, FileSpreadsheet, Layers, Crop,
+  Camera, Video, RotateCw, VideoOff, Sliders
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -24,6 +25,17 @@ const loadPdfJs = (): Promise<any> => {
   });
 };
 
+const fileToBase64 = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve(reader.result as string);
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+};
+
 interface FormField {
   id: string;
   name: string;
@@ -33,6 +45,7 @@ interface FormField {
   w: number; // percentage of width (0 - 100)
   h: number; // percentage of height (0 - 100)
   page: number;
+  align?: "left" | "right" | "center";
 }
 
 export default function App() {
@@ -49,6 +62,10 @@ export default function App() {
 
   // Uploaded Image State
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
+
+  // Language & Interactive PDF Baking States
+  const [language, setLanguage] = useState<"ltr" | "rtl">("ltr");
+  const [isBaking, setIsBaking] = useState<boolean>(false);
 
   // Crop / Selection Area State
   const [cropModeActive, setCropModeActive] = useState<boolean>(false);
@@ -78,6 +95,17 @@ export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Camera & Filter States for ment_scanner (Document Camera Scan)
+  const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>("");
+  const [imageRotation, setImageRotation] = useState<number>(0);
+  const [imageFilter, setImageFilter] = useState<"none" | "grayscale" | "bw" | "vibrant">("none");
+  const [autoDetectOnCapture, setAutoDetectOnCapture] = useState<boolean>(true);
+  const pendingAiDetectionRef = useRef<boolean>(false);
 
   // Check backend server connection and API Key status
   useEffect(() => {
@@ -128,6 +156,16 @@ export default function App() {
     }
   }, [docSource, templateId]);
 
+  // Synchronize default field text alignment whenever the active language/direction is toggled
+  useEffect(() => {
+    setFields((prev) =>
+      prev.map((f) => ({
+        ...f,
+        align: f.align || (language === "rtl" ? "right" : "left"),
+      }))
+    );
+  }, [language]);
+
   // Render trigger - template draw or PDF render
   useEffect(() => {
     if (docSource === "template") {
@@ -137,7 +175,7 @@ export default function App() {
     } else if (docSource === "pdf" && pdfFile) {
       renderPdfPage();
     }
-  }, [docSource, templateId, uploadedImage, currentPage, pdfFile]);
+  }, [docSource, templateId, uploadedImage, currentPage, pdfFile, imageRotation, imageFilter]);
 
   // Handle drawing standard high fidelity templates onto canvas
   const drawTemplate = () => {
@@ -375,18 +413,69 @@ export default function App() {
     const img = new Image();
     img.src = uploadedImage;
     img.onload = () => {
-      // Scale coordinates to realistic aspect ratios
       const maxW = 612;
       const aspect = img.height / img.width;
+      
+      // Calculate dimensions depending on rotation
+      const isRotated90or270 = imageRotation === 90 || imageRotation === 270;
       const width = maxW;
       const height = Math.round(maxW * aspect);
+      
+      const targetWidth = isRotated90or270 ? height : width;
+      const targetHeight = isRotated90or270 ? width : height;
 
-      canvas.width = width;
-      canvas.height = height;
-      setCanvasDimensions({ width, height });
-      setPdfPoints({ width, height }); // treat point boundaries same as image dimensions
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      setCanvasDimensions({ width: targetWidth, height: targetHeight });
+      setPdfPoints({ width: targetWidth, height: targetHeight }); // treat point boundaries same as image dimensions
 
-      ctx.drawImage(img, 0, 0, width, height);
+      ctx.clearRect(0, 0, targetWidth, targetHeight);
+      ctx.save();
+      
+      // Rotate around the center of the target dimensions
+      ctx.translate(targetWidth / 2, targetHeight / 2);
+      ctx.rotate((imageRotation * Math.PI) / 180);
+      ctx.drawImage(img, -width / 2, -height / 2, width, height);
+      ctx.restore();
+
+      // Apply image filters directly on canvas data
+      if (imageFilter !== "none") {
+        const imgData = ctx.getImageData(0, 0, targetWidth, targetHeight);
+        const data = imgData.data;
+        
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i];
+          const g = data[i+1];
+          const b = data[i+2];
+          
+          if (imageFilter === "grayscale") {
+            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+            data[i] = gray;
+            data[i+1] = gray;
+            data[i+2] = gray;
+          } else if (imageFilter === "bw") {
+            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+            const threshold = 128;
+            const bw = gray > threshold ? 255 : 0;
+            data[i] = bw;
+            data[i+1] = bw;
+            data[i+2] = bw;
+          } else if (imageFilter === "vibrant") {
+            const factor = 1.4;
+            data[i] = Math.max(0, Math.min(255, 128 + (r - 128) * factor));
+            data[i+1] = Math.max(0, Math.min(255, 128 + (g - 128) * factor));
+            data[i+2] = Math.max(0, Math.min(255, 128 + (b - 128) * factor));
+          }
+        }
+        ctx.putImageData(imgData, 0, 0);
+      }
+
+      if (pendingAiDetectionRef.current) {
+        pendingAiDetectionRef.current = false;
+        setTimeout(() => {
+          autoDetectFieldsWithLLM();
+        }, 300);
+      }
     };
   };
 
@@ -470,6 +559,101 @@ export default function App() {
     fileInputRef.current?.click();
   };
 
+  // Camera scanner methods for ment_scanner
+  const startCameraCapture = async () => {
+    setErrorMessage(null);
+    setIsCameraActive(true);
+    setDocSource("image");
+    setFields([]);
+    setSelectedFieldId(null);
+    
+    try {
+      // Check for available devices
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter(device => device.kind === "videoinput");
+      setCameraDevices(videoInputs);
+      if (videoInputs.length > 0 && !selectedCameraId) {
+        setSelectedCameraId(videoInputs[0].deviceId);
+      }
+      
+      const constraints: MediaStreamConstraints = {
+        video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : { facingMode: "environment" }
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      setCameraStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err: any) {
+      console.error("Camera access failed:", err);
+      setErrorMessage("Could not access your camera. Make sure permissions are granted and you are on a secure HTTPS connection or localhost.");
+      setIsCameraActive(false);
+    }
+  };
+
+  const stopCameraCapture = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(track => track.stop());
+      setCameraStream(null);
+    }
+    setIsCameraActive(false);
+  };
+
+  const changeCamera = async (deviceId: string) => {
+    setSelectedCameraId(deviceId);
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(track => track.stop());
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId } }
+      });
+      setCameraStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.error("Failed to switch camera:", err);
+      setErrorMessage("Failed to switch to the selected camera model.");
+    }
+  };
+
+  const capturePhoto = () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 800;
+    canvas.height = video.videoHeight || 1000;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const photoBase64 = canvas.toDataURL("image/png");
+      
+      // Auto reset rotation and filters for the fresh snap to let user configure things cleanly
+      setImageRotation(0);
+      setImageFilter("none");
+      
+      if (autoDetectOnCapture) {
+        pendingAiDetectionRef.current = true;
+      }
+      
+      setUploadedImage(photoBase64);
+      setDocSource("image");
+      stopCameraCapture();
+    }
+  };
+
+  // Cleanup camera stream on unmount
+  useEffect(() => {
+    return () => {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [cameraStream]);
+
   // Reset to default sample templates
   const selectTemplate = (id: "w9" | "sub") => {
     setDocSource("template");
@@ -550,7 +734,8 @@ export default function App() {
             y: Number(Math.max(0, Math.min(100, fy)).toFixed(2)),
             w: Number(Math.max(0.5, Math.min(100, fw)).toFixed(2)),
             h: Number(Math.max(0.5, Math.min(100, fh)).toFixed(2)),
-            page: currentPage
+            page: currentPage,
+            align: language === "rtl" ? "right" : "left"
           };
         });
 
@@ -647,7 +832,8 @@ export default function App() {
         y: pctY,
         w: 12, // default 12% width
         h: 3,  // default 3% height
-        page: currentPage
+        page: currentPage,
+        align: language === "rtl" ? "right" : "left"
       };
 
       setFields([...fields, newField]);
@@ -798,7 +984,8 @@ export default function App() {
       y: 15,
       w: 25,
       h: 3,
-      page: currentPage
+      page: currentPage,
+      align: language === "rtl" ? "right" : "left"
     };
     setFields([...fields, newField]);
     setSelectedFieldId(newId);
@@ -851,6 +1038,63 @@ export default function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // Convert visual layouts directly to interactive PDF with native fillable form inputs
+  const bakePdfForm = async () => {
+    setIsBaking(true);
+    setErrorMessage(null);
+    try {
+      let pdfBase64: string | null = null;
+      let imgBase64: string | null = null;
+      
+      if (docSource === "pdf" && pdfFile) {
+        pdfBase64 = await fileToBase64(pdfFile);
+      } else if (docSource === "image" && canvasRef.current) {
+        imgBase64 = canvasRef.current.toDataURL("image/png");
+      }
+      
+      const payload = {
+        pdfBase64,
+        imgBase64,
+        fields,
+        language,
+        templateId
+      };
+      
+      const res = await fetch("/api/bake-pdf", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      if (!res.ok) {
+        throw new Error("Failed to process fillable PDF form on server.");
+      }
+      
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      
+      const downloadName = docSource === "pdf" 
+        ? "interactive_form_fillable.pdf" 
+        : docSource === "image" 
+        ? "scanned_document_fillable.pdf" 
+        : `interactive_form_${templateId}.pdf`;
+        
+      link.setAttribute("download", downloadName);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err: any) {
+      console.error(err);
+      setErrorMessage(err.message || "Failed to download your interactive PDF.");
+    } finally {
+      setIsBaking(false);
+    }
   };
 
   return (
@@ -906,10 +1150,18 @@ export default function App() {
               <button 
                 id="btn_trigger_upload"
                 onClick={triggerUploadClick}
-                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center gap-1 ${docSource === "pdf" || docSource === "image" ? "bg-blue-600 text-white shadow-xs" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
+                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center gap-1 ${docSource === "pdf" && !uploadedImage ? "bg-blue-600 text-white shadow-xs" : docSource === "image" && !isCameraActive ? "bg-blue-600 text-white shadow-xs" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
               >
                 <Upload className="w-3.5 h-3.5" />
                 Upload PDF / Image File
+              </button>
+              <button 
+                id="btn_camera_scanner_trigger"
+                onClick={startCameraCapture}
+                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${isCameraActive ? "bg-emerald-600 text-white shadow-xs animate-pulse" : "bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 border border-slate-200"}`}
+              >
+                <Camera className="w-3.5 h-3.5" />
+                <span>Scan with Camera (ment_scanner)</span>
               </button>
               <input 
                 type="file" 
@@ -966,6 +1218,46 @@ export default function App() {
             </div>
           </div>
 
+          {/* Interactive Image Scan Adjustments (ment_scanner) */}
+          {docSource === "image" && uploadedImage && !isCameraActive && (
+            <div className="bg-slate-100 border border-slate-200 rounded-xl p-3 flex flex-wrap gap-4 items-center justify-between text-xs my-1 shadow-xs">
+              <div className="flex items-center gap-2">
+                <Sliders className="w-3.5 h-3.5 text-slate-500" />
+                <span className="font-bold text-slate-600 uppercase tracking-wider text-[10px]">Image Scan Adjustments (ment_scanner):</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-4">
+                {/* Contrast adjustments */}
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500 font-medium font-sans">Contrast Mode:</span>
+                  <div className="bg-white border border-slate-200 rounded-lg p-0.5 flex gap-0.5 shadow-2xs">
+                    {(["none", "grayscale", "bw", "vibrant"] as const).map((filterId) => (
+                      <button
+                        key={filterId}
+                        onClick={() => setImageFilter(filterId)}
+                        className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer ${imageFilter === filterId ? "bg-slate-900 text-white shadow-xs" : "text-slate-500 hover:bg-slate-100"}`}
+                      >
+                        {filterId === "none" ? "Color Scan" : filterId === "grayscale" ? "Grayscale" : filterId === "bw" ? "B&W Document" : "Vibrant"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Rotate adjustments */}
+                <div className="flex items-center gap-2 border-l border-slate-200 pl-4">
+                  <span className="text-slate-500 font-medium">Rotation:</span>
+                  <button
+                    onClick={() => setImageRotation((prev) => (prev + 90) % 360)}
+                    className="flex items-center gap-1.5 bg-white hover:bg-slate-50 active:bg-slate-100 border border-slate-200 px-3 py-1 rounded-lg text-slate-700 transition-all shadow-2xs cursor-pointer"
+                    title="Rotate 90 degrees clockwise"
+                  >
+                    <RotateCw className="w-3.5 h-3.5 text-slate-500 hover:rotate-45 transition-transform" />
+                    <span className="font-bold text-[10px] tracking-wider uppercase">{imageRotation}°</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Interactive Document Sheet Canvas */}
           <div className="bg-slate-200/60 rounded-2xl border border-slate-200 p-6 flex justify-center items-center overflow-auto min-h-[500px] relative group shadow-inner">
             
@@ -1009,22 +1301,115 @@ export default function App() {
               )}
             </AnimatePresence>
 
-            {/* Canvas scale wrapper */}
-            <div 
-              style={{ transform: `scale(${zoomScale})`, transformOrigin: "center center" }}
-              className="relative transition-transform duration-300"
-            >
+            {/* Camera Capture Stream Panel (ment_scanner) */}
+            {isCameraActive ? (
+              <div className="relative bg-slate-950 rounded-2xl border-2 border-emerald-500/50 p-5 w-full max-w-xl shadow-2xl flex flex-col gap-4 overflow-hidden my-4">
+                <div className="absolute top-3 right-6 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider animate-pulse flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  Live Camera (ment_scanner)
+                </div>
+
+                <div className="relative rounded-xl overflow-hidden bg-black border border-slate-800 flex items-center justify-center">
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    className="w-full h-[380px] object-cover scale-x-[-1] brightness-105"
+                  />
+                  {/* Scanner targets / document outline guide overlay */}
+                  <div className="absolute inset-4 border border-dashed border-emerald-500/30 rounded-lg pointer-events-none flex items-center justify-center">
+                    <div className="w-[85%] h-[85%] border-2 border-dashed border-emerald-500/40 rounded-md relative">
+                      {/* Grid crosshair markers */}
+                      <span className="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-emerald-400" />
+                      <span className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-emerald-400" />
+                      <span className="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-emerald-400" />
+                      <span className="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
+                      
+                      <div className="absolute inset-0 flex flex-col justify-between items-center text-emerald-400/60 p-4 pointer-events-none select-none text-[10px] font-bold tracking-wider text-center">
+                        <div>ALIGN DOCUMENT WITHIN TARGET BOX</div>
+                        <div>HOLD STEADY FOR BEST DETECTION ACCURACY</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Camera controls */}
+                <div className="flex flex-col sm:flex-row gap-3 items-center justify-between mt-1">
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider shrink-0">Camera Device:</label>
+                    <select
+                      id="select_camera_device"
+                      value={selectedCameraId}
+                      onChange={(e) => changeCamera(e.target.value)}
+                      className="bg-slate-900 border border-slate-700 text-xs text-white rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-blue-500 w-full sm:max-w-[200px]"
+                    >
+                      {cameraDevices.length === 0 ? (
+                        <option value="">Default System Camera</option>
+                      ) : (
+                        cameraDevices.map((device, idx) => (
+                          <option key={device.deviceId} value={device.deviceId}>
+                            {device.label || `Camera ${idx + 1}`}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </div>
+
+                  <div className="flex gap-2 w-full sm:w-auto justify-end">
+                    <button
+                      id="btn_camera_cancel"
+                      onClick={stopCameraCapture}
+                      className="bg-slate-900 border border-slate-800 hover:bg-slate-800 text-xs font-semibold text-slate-300 px-3.5 py-2 rounded-lg transition-colors flex items-center gap-1.5"
+                    >
+                      <VideoOff className="w-3.5 h-3.5" />
+                      Cancel
+                    </button>
+                    <button
+                      id="btn_camera_snap"
+                      onClick={capturePhoto}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white px-5 py-2 rounded-lg transition-colors flex items-center gap-2 shadow-md shadow-emerald-900/40"
+                    >
+                      <Camera className="w-4 h-4" />
+                      Capture Image
+                    </button>
+                  </div>
+                </div>
+
+                {/* Auto analysis options */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-t border-slate-800/80 pt-3 mt-1 text-xs gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer text-slate-300 hover:text-white select-none">
+                    <input
+                      type="checkbox"
+                      id="chk_auto_detect_on_capture"
+                      checked={autoDetectOnCapture}
+                      onChange={(e) => setAutoDetectOnCapture(e.target.checked)}
+                      className="w-4 h-4 text-emerald-600 bg-slate-900 border-slate-700 rounded focus:ring-emerald-500 focus:ring-offset-slate-900 focus:ring-2 cursor-pointer"
+                    />
+                    <span className="font-bold text-[10px] uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 animate-pulse text-emerald-400 shrink-0" />
+                      Auto-Detect Fields on Capture
+                    </span>
+                  </label>
+                  <span className="text-[9px] text-slate-500 italic">Analyzes document layout instantly via Gemini</span>
+                </div>
+              </div>
+            ) : (
+              /* Canvas scale wrapper */
               <div 
-                ref={containerRef}
-                onMouseDown={handleCanvasContainerMouseDown}
-                className="relative bg-white shadow-xl select-none cursor-crosshair overflow-hidden border border-slate-300/80 rounded-sm"
-                style={{ 
-                  width: `${canvasDimensions.width}px`, 
-                  height: `${canvasDimensions.height}px` 
-                }}
+                style={{ transform: `scale(${zoomScale})`, transformOrigin: "center center" }}
+                className="relative transition-transform duration-300"
               >
-                {/* Physical Render Canvas */}
-                <canvas ref={canvasRef} className="absolute inset-0 z-0 pointer-events-none" />
+                <div 
+                  ref={containerRef}
+                  onMouseDown={handleCanvasContainerMouseDown}
+                  className="relative bg-white shadow-xl select-none cursor-crosshair overflow-hidden border border-slate-300/80 rounded-sm"
+                  style={{ 
+                    width: `${canvasDimensions.width}px`, 
+                    height: `${canvasDimensions.height}px` 
+                  }}
+                >
+                  {/* Physical Render Canvas */}
+                  <canvas ref={canvasRef} className="absolute inset-0 z-0 pointer-events-none" />
 
                 {/* Crop help guide when crop mode is active but box not drawn yet */}
                 {cropModeActive && !cropRect && (
@@ -1139,6 +1524,7 @@ export default function App() {
                 )}
               </div>
             </div>
+          )}
           </div>
 
           {/* Navigation Controls Block */}
@@ -1208,6 +1594,86 @@ export default function App() {
         {/* RIGHT COLUMN: Field Editor, Tabular spreadsheet, CSV generator (4 cols) */}
         <div className="lg:col-span-4 flex flex-col gap-6">
 
+          {/* Fillable PDF Baker Engine Panel */}
+          <div className="bg-gradient-to-br from-indigo-50 to-blue-50 border border-blue-200 rounded-2xl p-5 shadow-xs flex flex-col gap-4">
+            <div className="flex items-center gap-2 border-b border-blue-100 pb-3">
+              <div className="bg-blue-600 text-white p-1.5 rounded-lg">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="font-bold text-slate-900 text-sm">
+                  ⚡ Native PDF Baker Engine
+                </h2>
+                <p className="text-[10px] text-slate-500 font-medium">
+                  Compile visual field layout coordinates into fillable forms
+                </p>
+              </div>
+            </div>
+
+            {/* Language Selection: English/Hebrew RTL */}
+            <div className="flex flex-col gap-2">
+              <label className="text-xs font-bold text-slate-600 flex items-center justify-between">
+                <span>TEXT ORIENTATION & LANGUAGE:</span>
+                <span className="text-[10px] text-blue-600 font-semibold uppercase font-mono">
+                  {language === "rtl" ? "RTL • Hebrew" : "LTR • English"}
+                </span>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  id="btn_lang_ltr"
+                  onClick={() => setLanguage("ltr")}
+                  type="button"
+                  className={`py-2 px-3 rounded-xl text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${language === "ltr" ? "bg-white border-blue-400 text-blue-700 shadow-xs" : "bg-slate-50/50 hover:bg-slate-100 border-slate-200 text-slate-500"}`}
+                >
+                  🇺🇸 English LTR
+                </button>
+                <button
+                  id="btn_lang_rtl"
+                  onClick={() => setLanguage("rtl")}
+                  type="button"
+                  className={`py-2 px-3 rounded-xl text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${language === "rtl" ? "bg-white border-blue-400 text-blue-700 shadow-xs animate-pulse" : "bg-slate-50/50 hover:bg-slate-100 border-slate-200 text-slate-500"}`}
+                >
+                  🇮🇱 עברית RTL
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500 leading-relaxed font-medium">
+                {language === "rtl" 
+                  ? "RTL enabled: Text alignment will automatically be locked on the RIGHT side inside the generated PDF for natural Hebrew typing."
+                  : "LTR enabled: Standard English/Western left-to-right character alignments inside target interactive inputs."
+                }
+              </p>
+            </div>
+
+            {/* Baking Action Button */}
+            <button
+              id="btn_action_bake_pdf"
+              onClick={bakePdfForm}
+              disabled={isBaking}
+              className={`w-full py-3 px-4 rounded-xl text-xs font-bold tracking-wide uppercase transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer ${
+                isBaking 
+                  ? "bg-slate-400 text-white cursor-not-allowed animate-pulse" 
+                  : "bg-blue-600 hover:bg-blue-700 text-white hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:shadow-md"
+              }`}
+            >
+              {isBaking ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Baking Interactive Form Fields...</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4" />
+                  <span>⚡ Bake & Download Fillable PDF</span>
+                </>
+              )}
+            </button>
+
+            <div className="text-[9px] text-slate-400 text-center leading-relaxed font-sans border-t border-blue-100 pt-2 flex items-center justify-center gap-1">
+              <Info className="w-3 h-3 text-blue-500 shrink-0" />
+              <span>Downloads a real, multi-page fillable PDF instantly.</span>
+            </div>
+          </div>
+
           {/* Collapsible/Tab Header */}
           <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col gap-4">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
@@ -1258,6 +1724,28 @@ export default function App() {
                         className="w-full bg-slate-50 border border-slate-200 p-2 rounded-lg text-slate-800 font-mono focus:border-blue-400 focus:ring-1 focus:ring-blue-400 outline-hidden font-bold"
                       />
                     </div>
+
+                    {/* Align Text Option (Only applicable for typing/multiline fields) */}
+                    {(field.type === "text" || field.type === "textarea") && (
+                      <div className="flex flex-col gap-1.5">
+                        <label className="font-medium text-slate-500">Align Text</label>
+                        <div className="grid grid-cols-3 gap-1 p-0.5 bg-slate-100 rounded-lg">
+                          {(["left", "center", "right"] as const).map(alignValue => {
+                            const isActive = (field.align || (language === "rtl" ? "right" : "left")) === alignValue;
+                            return (
+                              <button
+                                id={`radio_align_${alignValue}_${field.id}`}
+                                key={alignValue}
+                                onClick={() => updateFieldProperty(field.id, "align", alignValue)}
+                                className={`py-1 rounded-md text-[10px] font-bold uppercase tracking-wide transition-all ${isActive ? "bg-white text-blue-600 shadow-2xs" : "text-slate-500 hover:text-slate-800"}`}
+                              >
+                                {alignValue}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Coordinates Readout Grid (Points & Percentages) */}
                     <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">

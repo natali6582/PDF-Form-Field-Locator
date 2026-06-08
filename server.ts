@@ -165,6 +165,163 @@ Use clear prefix conventions: 'txt' (text, textarea), 'chk' (checkbox), 'img' (s
   }
 });
 
+// Endpoint to inject interactive fields into a PDF document
+app.post("/api/bake-pdf", async (req, res) => {
+  try {
+    const { pdfBase64, imgBase64, fields, language, templateId } = req.body;
+    const { PDFDocument, TextAlignment, rgb } = await import("pdf-lib");
+    
+    let pdfDoc: any;
+    
+    if (pdfBase64) {
+      // Decode user-supplied PDF file
+      const pdfBytes = Buffer.from(pdfBase64.replace(/^data:application\/pdf;base64,/, ""), "base64");
+      pdfDoc = await PDFDocument.load(pdfBytes);
+    } else if (imgBase64) {
+      // User supplied a scanned document image (PNG or JPG). Embed it as the background of a fresh PDF.
+      pdfDoc = await PDFDocument.create();
+      const cleanImgBase64 = imgBase64.replace(/^data:image\/\w+;base64,/, "");
+      const imgBuffer = Buffer.from(cleanImgBase64, "base64");
+      
+      let embeddedImage: any;
+      if (imgBase64.includes("image/png")) {
+        embeddedImage = await pdfDoc.embedPng(imgBuffer);
+      } else {
+        embeddedImage = await pdfDoc.embedJpg(imgBuffer);
+      }
+      
+      const { width, height } = embeddedImage.scale(1.0);
+      const page = pdfDoc.addPage([width, height]);
+      
+      page.drawImage(embeddedImage, {
+        x: 0,
+        y: 0,
+        width,
+        height,
+      });
+    } else {
+      // If user is bake-downloading a built-in template, construct a high-fidelity vector PDF page
+      pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage([612, 792]);
+      
+      // Draw background styling depending on the template selected
+      page.drawRectangle({
+        x: 0,
+        y: 0,
+        width: 612,
+        height: 792,
+        color: rgb(0.98, 0.98, 0.96), // pristine warm paper off-white
+      });
+      
+      if (templateId === "w9") {
+        page.drawText("Form W-9 (Interactive Baked Fillable PDF)", { x: 30, y: 740, size: 14 });
+        page.drawText("Department of the Treasury - Internal Revenue Service", { x: 30, y: 720, size: 8 });
+        page.drawLine({
+          start: { x: 30, y: 700 },
+          end: { x: 582, y: 700 },
+          thickness: 2,
+          color: rgb(0, 0, 0),
+        });
+        page.drawText("1. Taxpayer Name (as shown on your income tax return)", { x: 35, y: 670, size: 9 });
+        page.drawLine({ start: { x: 35, y: 645 }, end: { x: 320, y: 645 }, thickness: 1, color: rgb(0.5, 0.5, 0.5) });
+        
+        page.drawText("2. Business classification checkboxes (Individual / Sole / S-Corp)", { x: 35, y: 600, size: 9 });
+        page.drawText("Part I: Taxpayer Identification Number (TIN)", { x: 35, y: 500, size: 10 });
+        page.drawRectangle({ x: 35, y: 470, width: 542, height: 20, color: rgb(0.95, 0.95, 0.95) });
+        page.drawText("Part II: Signatures & Certification", { x: 35, y: 380, size: 10 });
+        page.drawText("Signature of U.S. Person:", { x: 35, y: 340, size: 9 });
+      } else {
+        page.drawText("REAL ESTATE INVESTMENTS SUBSCRIPTION AGREEMENT", { x: 40, y: 740, size: 14 });
+        page.drawText("SLATE CO-INVESTMENT FUND L.P. - CONFIDENTIAL MEMORANDUM", { x: 40, y: 722, size: 8 });
+        page.drawLine({
+          start: { x: 40, y: 710 },
+          end: { x: 572, y: 710 },
+          thickness: 1,
+          color: rgb(0.7, 0.7, 0.7),
+        });
+        page.drawText("I. INVESTOR INFORMATION", { x: 40, y: 680, size: 10 });
+        page.drawText("Investor Full Legal Entity / Name:", { x: 45, y: 650, size: 9 });
+        page.drawText("Contact E-mail Address:", { x: 45, y: 610, size: 9 });
+        page.drawText("II. QUALIFIED INVESTOR STATUS & CERTIFICATION", { x: 40, y: 550, size: 10 });
+        page.drawText("Commitment Amount (USD):", { x: 45, y: 510, size: 9 });
+        page.drawText("III. EXECUTION & AUTHORIZED SIGNATURE", { x: 40, y: 420, size: 10 });
+      }
+    }
+    
+    const form = pdfDoc.getForm();
+    const isRtl = language === "rtl";
+    
+    if (fields && Array.isArray(fields)) {
+      for (const f of fields) {
+        // Handle pages bounds and coordinate calculation
+        const pageIndex = Math.max(0, Math.min(pdfDoc.getPageCount() - 1, (f.page || 1) - 1));
+        const pdfPage = pdfDoc.getPage(pageIndex);
+        const { width, height } = pdfPage.getSize();
+        
+        const xPos = (f.x / 100) * width;
+        // top-left to bottom-left relative mapping
+        const yPos = height - ((f.y + f.h) / 100) * height;
+        const wBounds = (f.w / 100) * width;
+        const hBounds = (f.h / 100) * height;
+        
+        // Ensure name contains no spaces and is completely unique
+        let cleanName = (f.name || "field").replace(/\s+/g, "");
+        let uniqueName = cleanName;
+        let count = 1;
+        while (form.getFields().some((existing: any) => existing.getName() === uniqueName)) {
+          uniqueName = `${cleanName}_${count++}`;
+        }
+        
+        try {
+          if (f.type === "checkbox") {
+            const checkBox = form.createCheckBox(uniqueName);
+            checkBox.addToPage(pdfPage, {
+              x: xPos,
+              y: yPos,
+              width: wBounds,
+              height: hBounds,
+            });
+          } else {
+            // text, textarea, or image signature placeholders
+            const textField = form.createTextField(uniqueName);
+            if (f.type === "textarea") {
+              textField.enableMultiline();
+            }
+            
+            // Text alignment support based on field property, with overall language/RTL fallback
+            const fieldAlign = f.align || (isRtl ? "right" : "left");
+            if (fieldAlign === "right") {
+              textField.setAlignment(TextAlignment.Right);
+            } else if (fieldAlign === "center") {
+              textField.setAlignment(TextAlignment.Center);
+            } else {
+              textField.setAlignment(TextAlignment.Left);
+            }
+            
+            textField.addToPage(pdfPage, {
+              x: xPos,
+              y: yPos,
+              width: wBounds,
+              height: hBounds,
+            });
+          }
+        } catch (fieldErr) {
+          console.error(`Error adding field ${f.name}:`, fieldErr);
+        }
+      }
+    }
+    
+    // Save as Buffer and transfer
+    const bakedPdfBytes = await pdfDoc.save();
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "attachment; filename=fillable_form.pdf");
+    res.send(Buffer.from(bakedPdfBytes));
+  } catch (error: any) {
+    console.error("Error baking PDF with fields:", error);
+    res.status(500).json({ error: error.message || "Failed to package fillable PDF on the server." });
+  }
+});
+
 // Setup Vite Dev middlewares or static file serving
 async function initializeServer() {
   if (process.env.NODE_ENV !== "production") {
