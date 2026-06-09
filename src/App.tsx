@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   FileText, Upload, RefreshCw, ChevronLeft, ChevronRight, 
   Trash2, Plus, Download, Copy, Check, Info, ZoomIn, ZoomOut, AlertCircle, Sparkles, FileSpreadsheet, Layers, Crop,
-  Camera, Video, RotateCw, VideoOff, Sliders
+  RotateCw, Sliders
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -95,17 +95,10 @@ export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Camera & Filter States for ment_scanner (Document Camera Scan)
-  const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
-  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedCameraId, setSelectedCameraId] = useState<string>("");
+  // Scan Adjustments
   const [imageRotation, setImageRotation] = useState<number>(0);
   const [imageFilter, setImageFilter] = useState<"none" | "grayscale" | "bw" | "vibrant">("none");
-  const [autoDetectOnCapture, setAutoDetectOnCapture] = useState<boolean>(true);
-  const pendingAiDetectionRef = useRef<boolean>(false);
 
   // Check backend server connection and API Key status
   useEffect(() => {
@@ -469,13 +462,6 @@ export default function App() {
         }
         ctx.putImageData(imgData, 0, 0);
       }
-
-      if (pendingAiDetectionRef.current) {
-        pendingAiDetectionRef.current = false;
-        setTimeout(() => {
-          autoDetectFieldsWithLLM();
-        }, 300);
-      }
     };
   };
 
@@ -558,101 +544,6 @@ export default function App() {
   const triggerUploadClick = () => {
     fileInputRef.current?.click();
   };
-
-  // Camera scanner methods for ment_scanner
-  const startCameraCapture = async () => {
-    setErrorMessage(null);
-    setIsCameraActive(true);
-    setDocSource("image");
-    setFields([]);
-    setSelectedFieldId(null);
-    
-    try {
-      // Check for available devices
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoInputs = devices.filter(device => device.kind === "videoinput");
-      setCameraDevices(videoInputs);
-      if (videoInputs.length > 0 && !selectedCameraId) {
-        setSelectedCameraId(videoInputs[0].deviceId);
-      }
-      
-      const constraints: MediaStreamConstraints = {
-        video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : { facingMode: "environment" }
-      };
-      
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      setCameraStream(stream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err: any) {
-      console.error("Camera access failed:", err);
-      setErrorMessage("Could not access your camera. Make sure permissions are granted and you are on a secure HTTPS connection or localhost.");
-      setIsCameraActive(false);
-    }
-  };
-
-  const stopCameraCapture = () => {
-    if (cameraStream) {
-      cameraStream.getTracks().forEach(track => track.stop());
-      setCameraStream(null);
-    }
-    setIsCameraActive(false);
-  };
-
-  const changeCamera = async (deviceId: string) => {
-    setSelectedCameraId(deviceId);
-    if (cameraStream) {
-      cameraStream.getTracks().forEach(track => track.stop());
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: deviceId } }
-      });
-      setCameraStream(stream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      console.error("Failed to switch camera:", err);
-      setErrorMessage("Failed to switch to the selected camera model.");
-    }
-  };
-
-  const capturePhoto = () => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth || 800;
-    canvas.height = video.videoHeight || 1000;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const photoBase64 = canvas.toDataURL("image/png");
-      
-      // Auto reset rotation and filters for the fresh snap to let user configure things cleanly
-      setImageRotation(0);
-      setImageFilter("none");
-      
-      if (autoDetectOnCapture) {
-        pendingAiDetectionRef.current = true;
-      }
-      
-      setUploadedImage(photoBase64);
-      setDocSource("image");
-      stopCameraCapture();
-    }
-  };
-
-  // Cleanup camera stream on unmount
-  useEffect(() => {
-    return () => {
-      if (cameraStream) {
-        cameraStream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [cameraStream]);
 
   // Reset to default sample templates
   const selectTemplate = (id: "w9" | "sub") => {
@@ -1150,18 +1041,10 @@ export default function App() {
               <button 
                 id="btn_trigger_upload"
                 onClick={triggerUploadClick}
-                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center gap-1 ${docSource === "pdf" && !uploadedImage ? "bg-blue-600 text-white shadow-xs" : docSource === "image" && !isCameraActive ? "bg-blue-600 text-white shadow-xs" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
+                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center gap-1 ${docSource === "pdf" && !uploadedImage ? "bg-blue-600 text-white shadow-xs" : docSource === "image" ? "bg-blue-600 text-white shadow-xs" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
               >
                 <Upload className="w-3.5 h-3.5" />
                 Upload PDF / Image File
-              </button>
-              <button 
-                id="btn_camera_scanner_trigger"
-                onClick={startCameraCapture}
-                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${isCameraActive ? "bg-emerald-600 text-white shadow-xs animate-pulse" : "bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 border border-slate-200"}`}
-              >
-                <Camera className="w-3.5 h-3.5" />
-                <span>Scan with Camera (ment_scanner)</span>
               </button>
               <input 
                 type="file" 
@@ -1218,12 +1101,12 @@ export default function App() {
             </div>
           </div>
 
-          {/* Interactive Image Scan Adjustments (ment_scanner) */}
-          {docSource === "image" && uploadedImage && !isCameraActive && (
+          {/* Interactive Image Scan Adjustments */}
+          {docSource === "image" && uploadedImage && (
             <div className="bg-slate-100 border border-slate-200 rounded-xl p-3 flex flex-wrap gap-4 items-center justify-between text-xs my-1 shadow-xs">
               <div className="flex items-center gap-2">
                 <Sliders className="w-3.5 h-3.5 text-slate-500" />
-                <span className="font-bold text-slate-600 uppercase tracking-wider text-[10px]">Image Scan Adjustments (ment_scanner):</span>
+                <span className="font-bold text-slate-600 uppercase tracking-wider text-[10px]">Image Scan Adjustments:</span>
               </div>
               <div className="flex flex-wrap items-center gap-4">
                 {/* Contrast adjustments */}
@@ -1301,99 +1184,6 @@ export default function App() {
               )}
             </AnimatePresence>
 
-            {/* Camera Capture Stream Panel (ment_scanner) */}
-            {isCameraActive ? (
-              <div className="relative bg-slate-950 rounded-2xl border-2 border-emerald-500/50 p-5 w-full max-w-xl shadow-2xl flex flex-col gap-4 overflow-hidden my-4">
-                <div className="absolute top-3 right-6 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider animate-pulse flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  Live Camera (ment_scanner)
-                </div>
-
-                <div className="relative rounded-xl overflow-hidden bg-black border border-slate-800 flex items-center justify-center">
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    className="w-full h-[380px] object-cover scale-x-[-1] brightness-105"
-                  />
-                  {/* Scanner targets / document outline guide overlay */}
-                  <div className="absolute inset-4 border border-dashed border-emerald-500/30 rounded-lg pointer-events-none flex items-center justify-center">
-                    <div className="w-[85%] h-[85%] border-2 border-dashed border-emerald-500/40 rounded-md relative">
-                      {/* Grid crosshair markers */}
-                      <span className="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-emerald-400" />
-                      <span className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-emerald-400" />
-                      <span className="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-emerald-400" />
-                      <span className="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-emerald-400" />
-                      
-                      <div className="absolute inset-0 flex flex-col justify-between items-center text-emerald-400/60 p-4 pointer-events-none select-none text-[10px] font-bold tracking-wider text-center">
-                        <div>ALIGN DOCUMENT WITHIN TARGET BOX</div>
-                        <div>HOLD STEADY FOR BEST DETECTION ACCURACY</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Camera controls */}
-                <div className="flex flex-col sm:flex-row gap-3 items-center justify-between mt-1">
-                  <div className="flex items-center gap-2 w-full sm:w-auto">
-                    <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider shrink-0">Camera Device:</label>
-                    <select
-                      id="select_camera_device"
-                      value={selectedCameraId}
-                      onChange={(e) => changeCamera(e.target.value)}
-                      className="bg-slate-900 border border-slate-700 text-xs text-white rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-blue-500 w-full sm:max-w-[200px]"
-                    >
-                      {cameraDevices.length === 0 ? (
-                        <option value="">Default System Camera</option>
-                      ) : (
-                        cameraDevices.map((device, idx) => (
-                          <option key={device.deviceId} value={device.deviceId}>
-                            {device.label || `Camera ${idx + 1}`}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-
-                  <div className="flex gap-2 w-full sm:w-auto justify-end">
-                    <button
-                      id="btn_camera_cancel"
-                      onClick={stopCameraCapture}
-                      className="bg-slate-900 border border-slate-800 hover:bg-slate-800 text-xs font-semibold text-slate-300 px-3.5 py-2 rounded-lg transition-colors flex items-center gap-1.5"
-                    >
-                      <VideoOff className="w-3.5 h-3.5" />
-                      Cancel
-                    </button>
-                    <button
-                      id="btn_camera_snap"
-                      onClick={capturePhoto}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white px-5 py-2 rounded-lg transition-colors flex items-center gap-2 shadow-md shadow-emerald-900/40"
-                    >
-                      <Camera className="w-4 h-4" />
-                      Capture Image
-                    </button>
-                  </div>
-                </div>
-
-                {/* Auto analysis options */}
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-t border-slate-800/80 pt-3 mt-1 text-xs gap-2">
-                  <label className="flex items-center gap-2 cursor-pointer text-slate-300 hover:text-white select-none">
-                    <input
-                      type="checkbox"
-                      id="chk_auto_detect_on_capture"
-                      checked={autoDetectOnCapture}
-                      onChange={(e) => setAutoDetectOnCapture(e.target.checked)}
-                      className="w-4 h-4 text-emerald-600 bg-slate-900 border-slate-700 rounded focus:ring-emerald-500 focus:ring-offset-slate-900 focus:ring-2 cursor-pointer"
-                    />
-                    <span className="font-bold text-[10px] uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5 animate-pulse text-emerald-400 shrink-0" />
-                      Auto-Detect Fields on Capture
-                    </span>
-                  </label>
-                  <span className="text-[9px] text-slate-500 italic">Analyzes document layout instantly via Gemini</span>
-                </div>
-              </div>
-            ) : (
               /* Canvas scale wrapper */
               <div 
                 style={{ transform: `scale(${zoomScale})`, transformOrigin: "center center" }}
@@ -1524,7 +1314,6 @@ export default function App() {
                 )}
               </div>
             </div>
-          )}
           </div>
 
           {/* Navigation Controls Block */}
