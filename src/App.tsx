@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   FileText, Upload, RefreshCw, ChevronLeft, ChevronRight, 
   Trash2, Plus, Download, Copy, Check, Info, ZoomIn, ZoomOut, AlertCircle, Sparkles, FileSpreadsheet, Layers, Crop,
-  RotateCw, Sliders
+  RotateCw, Sliders, Undo2, Redo2, FileJson, CheckCircle2, ShieldCheck, HelpCircle, Save, History, FileCode, GitMerge
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { extractAndParseXFA, ParsedXFAField } from "./utils/xdpParser";
 
 // Load PDF.js dynamically from CDN to prevent Vite bundle/worker compilation issues
 const loadPdfJs = (): Promise<any> => {
@@ -48,6 +49,9 @@ interface FormField {
   align?: "left" | "right" | "center";
   value?: string;
   fontSize?: number;
+  label?: string;
+  confidence?: number;
+  reasoning?: string;
 }
 
 export default function App() {
@@ -62,6 +66,18 @@ export default function App() {
   const [pdfPoints, setPdfPoints] = useState<{ width: number; height: number }>({ width: 612, height: 792 }); // default Letter Size points
   const [canvasDimensions, setCanvasDimensions] = useState<{ width: number; height: number }>({ width: 612, height: 792 });
 
+  // XFA / XDP states
+  const [xfaData, setXfaData] = useState<{
+    detected: boolean;
+    rawXml: string;
+    fields: ParsedXFAField[];
+  } | null>(null);
+  const [showXfaWizard, setShowXfaWizard] = useState<boolean>(false);
+
+  // Truth Code Mapping states
+  const [truthCodeMapping, setTruthCodeMapping] = useState<Record<string, string>>({});
+  const [truthCodeFileName, setTruthCodeFileName] = useState<string>("");
+
   // Uploaded Image State
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
 
@@ -75,6 +91,19 @@ export default function App() {
 
   // Interaction State
   const [fields, setFields] = useState<FormField[]>([]);
+  
+  // Undo/Redo History Stacks
+  const [fieldsHistory, setFieldsHistory] = useState<FormField[][]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+
+  // Persistent Timestamped Backups
+  interface BackupSnapshot {
+    id: string;
+    timestamp: string;
+    docName: string;
+    fields: FormField[];
+  }
+  const [backups, setBackups] = useState<BackupSnapshot[]>([]);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [zoomScale, setZoomScale] = useState<number>(1.0);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
@@ -102,6 +131,361 @@ export default function App() {
   const [imageRotation, setImageRotation] = useState<number>(0);
   const [imageFilter, setImageFilter] = useState<"none" | "grayscale" | "bw" | "vibrant">("none");
 
+  // Setup standard collision boxes register
+  const TEMPLATE_COLLISION_BOXES: Record<string, { name: string; x: number; y: number; w: number; h: number }[]> = {
+    w9: [
+      { name: "Form W-9 Header Area", x: 3, y: 3, w: 94, h: 6 },
+      { name: "1. Name Label", x: 5, y: 11, w: 30, h: 3 },
+      { name: "2. Business Name Label", x: 5, y: 16, w: 30, h: 3 },
+      { name: "3. Classification Instructions Area", x: 5, y: 21, w: 90, h: 3 },
+      { name: "Individual/Sole checkbox label text", x: 12, y: 24.5, w: 10, h: 2 },
+      { name: "C Corp checkbox label text", x: 25, y: 24.5, w: 5, h: 2 },
+      { name: "S Corp checkbox label text", x: 35, y: 24.5, w: 5, h: 2 },
+      { name: "5. Address Line Label", x: 5, y: 32, w: 30, h: 3 },
+      { name: "6. City State Zip Label", x: 5, y: 38, w: 30, h: 3 },
+      { name: "Part I Header Block", x: 4, y: 46, w: 92, h: 4 },
+      { name: "Part I Guidance text", x: 5, y: 51, w: 90, h: 2.5 },
+      { name: "Social Security Number title", x: 57, y: 54, w: 20, h: 2.5 },
+      { name: "Part II Header Block", x: 4, y: 63, w: 92, h: 4 },
+      { name: "Part II Certification Rules details", x: 5, y: 67, w: 90, h: 3 },
+      { name: "Sign Here branding box", x: 4, y: 70, w: 15, h: 5 },
+      { name: "Signature of U.S. Person label", x: 11, y: 75.5, w: 30, h: 2 },
+    ],
+    sub: [
+      { name: "Confidential Memorandum Header area", x: 4, y: 4, w: 92, h: 5 },
+      { name: "Slate Co-Investment Label text", x: 4, y: 9, w: 92, h: 3 },
+      { name: "I. Investor Info Header", x: 4, y: 14, w: 92, h: 3 },
+      { name: "Investor Full Name Label text", x: 6, y: 17, w: 20, h: 2 },
+      { name: "E-mail Label text", x: 6, y: 24, w: 22, h: 2 },
+      { name: "II. Qualified Status Header banner", x: 4, y: 30, w: 92, h: 3 },
+      { name: "Accredited Investor checkbox text", x: 9, y: 32, w: 85, h: 4 },
+      { name: "Commitment Amount Label text", x: 6, y: 38, w: 25, h: 2 },
+      { name: "III. Execution Info Label text", x: 4, y: 45, w: 92, h: 3 },
+      { name: "Authorized Signatory Label text", x: 6, y: 51, w: 25, h: 2 },
+      { name: "Signature Date Label text", x: 65, y: 51, w: 15, h: 2 },
+    ],
+    hebrewSchool: [
+      { name: "טופס רישום כותרת ראשית", x: 25, y: 4, w: 50, h: 4 },
+      { name: "משרד החינוך כותרת משנה", x: 35, y: 8, w: 30, h: 2.5 },
+      { name: "תאריך עליון תוויות", x: 55, y: 48.5, w: 10, h: 2 },
+      { name: "שם המצהיר תווית טקסט", x: 48, y: 54.3, w: 10, h: 2 },
+      { name: "שם בית הספר תווית טקסט", x: 32, y: 56.5, w: 12, h: 2 },
+      { name: "שם הילד תווית טקסט", x: 58, y: 58.8, w: 10, h: 2 },
+      { name: "תעודת זהות תווית טקסט", x: 12, y: 58.8, w: 10, h: 2 },
+      { name: "אישור מעקב תיבות טקסט תיאור", x: 70, y: 66, w: 10, h: 2 },
+      { name: "לקות למידה תיבות טקסט תיאור", x: 70, y: 68, w: 10, h: 2 },
+      { name: "בעיות התנהגות תיבות טקסט תיאור", x: 70, y: 69.5, w: 10, h: 2 },
+      { name: "שם הורה 1 תווית טקסט", x: 44, y: 80, w: 10, h: 2 },
+      { name: "כתובת הורה 1 תווית טקסט", x: 20, y: 80, w: 10, h: 2 },
+      { name: "תאריך הורה 1 תווית טקסט", x: 44, y: 82.3, w: 10, h: 2 },
+      { name: "לחצני חתימה הסבר טקסט", x: 30, y: 86.5, w: 50, h: 2 },
+    ],
+  };
+
+  interface ValidationIssue {
+    id: string;
+    fieldId: string;
+    fieldName: string;
+    type: "error" | "warning";
+    category: "boundary" | "overlap" | "duplicate" | "text-collision" | "aspect-size";
+    message: string;
+    code: "BOUNDARY" | "DUPLICATE_NAME" | "OVERLAP" | "COLLISION" | "ASPECT_RATIO";
+  }
+
+  const getValidationResults = (currentFields: FormField[]): ValidationIssue[] => {
+    const issues: ValidationIssue[] = [];
+
+    currentFields.forEach((f) => {
+      // 1. Boundary check
+      if (f.x < 0 || f.y < 0 || f.x + f.w > 100 || f.y + f.h > 100) {
+        issues.push({
+          id: `boundary-err-${f.id}`,
+          fieldId: f.id,
+          fieldName: f.name,
+          type: "error",
+          category: "boundary",
+          code: "BOUNDARY",
+          message: `Field '${f.name}' exceeds page limits: X + Width must not exceed 100% boundary.`,
+        });
+      } else {
+        const threshold = 1.0;
+        if (f.x < threshold || f.y < threshold || f.x + f.w > 100 - threshold || f.y + f.h > 100 - threshold) {
+          issues.push({
+            id: `boundary-warn-${f.id}`,
+            fieldId: f.id,
+            fieldName: f.name,
+            type: "warning",
+            category: "boundary",
+            code: "BOUNDARY",
+            message: `Field '${f.name}' is within 1% safety margin of coordinates limit.`,
+          });
+        }
+      }
+
+      // 2. Duplicate Name Check
+      const isDuplicate = currentFields.some((other) => other.id !== f.id && other.name.toLowerCase() === f.name.toLowerCase());
+      if (isDuplicate) {
+        issues.push({
+          id: `duplicate-err-${f.id}`,
+          fieldId: f.id,
+          fieldName: f.name,
+          type: "error",
+          category: "duplicate",
+          code: "DUPLICATE_NAME",
+          message: `Duplicate ID name error: '${f.name}' must be unique to avoid PDF format compiler conflicts.`,
+        });
+      }
+
+      // 3. Overlap Check
+      currentFields.forEach((other) => {
+        if (other.id !== f.id && other.page === f.page) {
+          const overlapX = !(f.x + f.w <= other.x || other.x + other.w <= f.x);
+          const overlapY = !(f.y + f.h <= other.y || other.y + other.h <= f.y);
+          if (overlapX && overlapY) {
+            issues.push({
+              id: `overlap-${f.id}-${other.id}`,
+              fieldId: f.id,
+              fieldName: f.name,
+              type: "warning",
+              category: "overlap",
+              code: "OVERLAP",
+              message: `Overlaps outline coordinates bounds of field '${other.name}'.`,
+            });
+          }
+        }
+      });
+
+      // 4. Field Sizing Verification
+      if (f.type === "checkbox") {
+        if (f.w > 6.0 || f.h > 6.0) {
+          issues.push({
+            id: `aspect-warn-size-${f.id}`,
+            fieldId: f.id,
+            fieldName: f.name,
+            type: "warning",
+            category: "aspect-size",
+            code: "ASPECT_RATIO",
+            message: `Checkbox may be too large (${f.w.toFixed(1)}% x ${f.h.toFixed(1)}%). Standard boxes should normally be small (1.5% to 3.0%).`,
+          });
+        }
+        const ratio = f.w / f.h;
+        if (ratio < 0.4 || ratio > 2.5) {
+          issues.push({
+            id: `aspect-warn-ratio-${f.id}`,
+            fieldId: f.id,
+            fieldName: f.name,
+            type: "warning",
+            category: "aspect-size",
+            code: "ASPECT_RATIO",
+            message: `Checkbox aspect ratio is skewed (Width/Height ratio: ${ratio.toFixed(2)}). Normal boxes are square.`,
+          });
+        }
+      } else if (f.type === "button" || f.type === "image") {
+        if (f.w < 3.0 || f.h < 1.4) {
+          issues.push({
+            id: `aspect-warn-sigsmall-${f.id}`,
+            fieldId: f.id,
+            fieldName: f.name,
+            type: "warning",
+            category: "aspect-size",
+            code: "ASPECT_RATIO",
+            message: `Interactive prompt button area '${f.name}' is too small for digital clicks.`,
+          });
+        }
+      }
+
+      // 5. Hardcoded template text collision label check
+      if (docSource === "template") {
+        const boxes = TEMPLATE_COLLISION_BOXES[templateId] || [];
+        boxes.forEach((box) => {
+          const intersectX = !(f.x + f.w <= box.x || box.x + box.w <= f.x);
+          const intersectY = !(f.y + f.h <= box.y || box.y + box.h <= f.y);
+          if (intersectX && intersectY) {
+            issues.push({
+              id: `collision-warn-${f.id}-${box.name.replace(/\s+/g, "")}`,
+              fieldId: f.id,
+              fieldName: f.name,
+              type: "warning",
+              category: "text-collision",
+              code: "COLLISION",
+              message: `Text Cover: Field covers native printed labels: '${box.name}'.`,
+            });
+          }
+        });
+      }
+    });
+
+    return issues;
+  };
+
+  // Undo/Redo Engine
+  const pushHistoryState = (newFields: FormField[]) => {
+    const copy = JSON.parse(JSON.stringify(newFields));
+    setFieldsHistory((prev) => {
+      const nextHistory = prev.slice(0, historyIndex + 1);
+      const updatedHistory = [...nextHistory, copy];
+      setHistoryIndex(updatedHistory.length - 1);
+      return updatedHistory;
+    });
+  };
+
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      const prevIdx = historyIndex - 1;
+      setHistoryIndex(prevIdx);
+      setFields(JSON.parse(JSON.stringify(fieldsHistory[prevIdx])));
+    }
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < fieldsHistory.length - 1) {
+      const nextIdx = historyIndex + 1;
+      setHistoryIndex(nextIdx);
+      setFields(JSON.parse(JSON.stringify(fieldsHistory[nextIdx])));
+    }
+  };
+
+  const applyTruthCodeMapping = (newFields: FormField[], mappingRecord: Record<string, string> = truthCodeMapping): FormField[] => {
+    if (!mappingRecord || Object.keys(mappingRecord).length === 0) return newFields;
+    return newFields.map((f) => {
+      const labelToMatch = (f.label || f.name || "").trim().toLowerCase();
+      const matchingKey = Object.keys(mappingRecord).find(k => k.trim().toLowerCase() === labelToMatch);
+      if (matchingKey) {
+        return { ...f, name: mappingRecord[matchingKey] };
+      }
+      return f;
+    });
+  };
+
+  const setFieldsWithHistory = (newFields: FormField[]) => {
+    const mapped = applyTruthCodeMapping(newFields);
+    setFields(mapped);
+    pushHistoryState(mapped);
+  };
+
+  const applyLoadedMappingToCurrentFields = (mapping: Record<string, string>) => {
+    const updated = applyTruthCodeMapping(fields, mapping);
+    setFieldsWithHistory(updated);
+  };
+
+  // Permanent Backup snapshots auto savers
+  useEffect(() => {
+    const saved = localStorage.getItem("pdf-locator-snapshot-backups");
+    if (saved) {
+      try {
+        setBackups(JSON.parse(saved));
+      } catch (err) {
+        console.warn("Could not load stored backup lists ", err);
+      }
+    }
+  }, []);
+
+  const saveToLocalStorage = (updatedBackups: BackupSnapshot[]) => {
+    localStorage.setItem("pdf-locator-snapshot-backups", JSON.stringify(updatedBackups));
+  };
+
+  const createBackupSnapshot = (snapLabel?: string) => {
+    const now = new Date();
+    const timestampStr = now.toISOString().replace(/T/, ' ').replace(/\..+/, '').slice(0, 19);
+    const docName = docSource === "pdf" && pdfFile ? pdfFile.name : docSource === "image" ? "Uploaded Scan" : `Template: ${templateId.toUpperCase()}`;
+    const label = snapLabel || `output_${now.toISOString().slice(0, 10)}T${now.toTimeString().slice(0, 8).replace(/:/g, '-')}`;
+    
+    const newSnapshot: BackupSnapshot = {
+      id: `snap-${Date.now()}`,
+      timestamp: timestampStr,
+      docName: `${docName} (${label})`,
+      fields: JSON.parse(JSON.stringify(fields)),
+    };
+
+    const updated = [newSnapshot, ...backups].slice(0, 50);
+    setBackups(updated);
+    saveToLocalStorage(updated);
+  };
+
+  const deleteBackupSnapshot = (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const updated = backups.filter((b) => b.id !== id);
+    setBackups(updated);
+    saveToLocalStorage(updated);
+  };
+
+  const applyNamingConventionAndStandardize = () => {
+    const nameCounts: Record<string, number> = {};
+    const updated = fields.map((f) => {
+      // Remove any current prefixes and replace with standards
+      let rawName = f.name.replace(/^(txt|chk|img|btn|txa|sig)/, "");
+      rawName = rawName.replace(/[^a-zA-Z0-9_]/g, "");
+      if (!rawName) rawName = "Field";
+      rawName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+
+      let prefix = "txt";
+      if (f.type === "checkbox") prefix = "chk";
+      else if (f.type === "textarea") prefix = "txt";
+      else if (f.type === "image" || f.type === "button") prefix = f.name.toLowerCase().includes("sig") ? "sig" : "btn";
+
+      let proposed = `${prefix}${rawName}`;
+      nameCounts[proposed] = (nameCounts[proposed] || 0) + 1;
+      if (nameCounts[proposed] > 1) {
+        proposed = `${proposed}_${nameCounts[proposed] - 1}`;
+      }
+      return {
+        ...f,
+        name: proposed,
+      };
+    });
+    setFieldsWithHistory(updated);
+  };
+
+  const autofixIssue = (issue: ValidationIssue) => {
+    if (issue.category === "duplicate") {
+      let count = 1;
+      let targetName = issue.fieldName;
+      const cleanTarget = targetName.replace(/_?\d+$/, "");
+      let proposedName = `${cleanTarget}_${count}`;
+      while (fields.some((f) => f.name.toLowerCase() === proposedName.toLowerCase())) {
+        count++;
+        proposedName = `${cleanTarget}_${count}`;
+      }
+      updateFieldProperty(issue.fieldId, "name", proposedName);
+    } else if (issue.category === "boundary") {
+      setFieldsWithHistory(
+        fields.map((f) => {
+          if (f.id !== issue.fieldId) return f;
+          let nx = Math.max(0.5, Math.min(99.5, f.x));
+          let ny = Math.max(0.5, Math.min(99.5, f.y));
+          let nw = Math.max(1.0, Math.min(100 - nx, f.w));
+          let nh = Math.max(1.0, Math.min(100 - ny, f.h));
+          if (nx + nw > 100) nw = 100 - nx;
+          if (ny + nh > 100) nh = 100 - ny;
+          return { ...f, x: Number(nx.toFixed(2)), y: Number(ny.toFixed(2)), w: Number(nw.toFixed(2)), h: Number(nh.toFixed(2)) };
+        })
+      );
+    } else if (issue.category === "overlap") {
+      setFieldsWithHistory(
+        fields.map((f) => {
+          if (f.id !== issue.fieldId) return f;
+          let ny = f.y + 0.8;
+          if (ny + f.h > 100) {
+            ny = f.y - 0.8;
+          }
+          return { ...f, y: Number(ny.toFixed(2)) };
+        })
+      );
+    } else if (issue.category === "aspect-size") {
+      setFieldsWithHistory(
+        fields.map((f) => {
+          if (f.id !== issue.fieldId) return f;
+          if (f.type === "checkbox") {
+            return { ...f, w: 2.0, h: 2.0 };
+          } else if (f.type === "button" || f.type === "image") {
+            return { ...f, w: 15.0, h: 3.5 };
+          }
+          return f;
+        })
+      );
+    }
+  };
+
   // Check backend server connection and API Key status
   useEffect(() => {
     const checkServer = async () => {
@@ -122,10 +506,11 @@ export default function App() {
 
   // Set initial mock schema fields for templates
   useEffect(() => {
+    let initialFields: FormField[] = [];
     if (docSource === "template") {
       if (templateId === "w9") {
         setPdfPoints({ width: 612, height: 792 });
-        setFields([
+        initialFields = [
           { id: "1", name: "txtTaxpayerName", type: "text", x: 10, y: 14.5, w: 42, h: 2.8, page: 1, value: "Johnathan Smith", fontSize: 12 },
           { id: "2", name: "txtBusinessName", type: "text", x: 10, y: 19.5, w: 42, h: 2.8, page: 1, value: "JS Contracting LLC", fontSize: 12 },
           { id: "3", name: "chkIndividualSole", type: "checkbox", x: 10.5, y: 24.8, w: 1.8, h: 1.4, page: 1 },
@@ -134,22 +519,22 @@ export default function App() {
           { id: "6", name: "txtAddressLine", type: "text", x: 10, y: 34.5, w: 42, h: 2.8, page: 1, value: "123 Maple Street", fontSize: 12 },
           { id: "7", name: "txtCityStateZip", type: "text", x: 10, y: 40.5, w: 42, h: 2.8, page: 1, value: "Austin, TX 78701", fontSize: 12 },
           { id: "8", name: "txtEmployerTin", type: "text", x: 58, y: 56.0, w: 32, h: 3.2, page: 1, value: "12-3456789", fontSize: 12 },
-          { id: "9", name: "imgOwnerSignature", type: "button", x: 28, y: 73.5, w: 45, h: 4.5, page: 1, value: "Sign (Johnathan Smith)", fontSize: 12 },
+          { id: "9", name: "sigOwnerSignature", type: "button", x: 28, y: 73.5, w: 45, h: 4.5, page: 1, value: "Sign (Johnathan Smith)", fontSize: 12 },
           { id: "10", name: "txtSigningDate", type: "text", x: 78, y: 74.2, w: 12, h: 2.5, page: 1, value: "06/10/2026", fontSize: 11 }
-        ]);
+        ];
       } else if (templateId === "sub") {
         setPdfPoints({ width: 612, height: 792 });
-        setFields([
+        initialFields = [
           { id: "21", name: "txtInvestorName", type: "text", x: 22, y: 18.2, w: 52, h: 2.8, page: 1, value: "Slate Capitals Inc", fontSize: 12 },
           { id: "22", name: "txtInvestorEmail", type: "text", x: 22, y: 23.8, w: 52, h: 2.8, page: 1, value: "invest@slatecap.com", fontSize: 11 },
           { id: "23", name: "chkQualifiedInvestor", type: "checkbox", x: 15.5, y: 31.8, w: 2.0, h: 1.5, page: 1 },
           { id: "24", name: "txtCommitmentAmount", type: "text", x: 35, y: 38.5, w: 38, h: 2.8, page: 1, value: "500000", fontSize: 12 },
-          { id: "25", name: "imgAuthorizedSignature", type: "button", x: 25, y: 52.0, w: 42, h: 4.8, page: 1, value: "Authorize (Slate Signatory)", fontSize: 12 },
+          { id: "25", name: "sigAuthorizedSignature", type: "button", x: 25, y: 52.0, w: 42, h: 4.8, page: 1, value: "Authorize (Slate Signatory)", fontSize: 12 },
           { id: "26", name: "txtSignatureDate", type: "text", x: 74, y: 53.0, w: 14, h: 2.5, page: 1, value: "06/10/2026", fontSize: 11 }
-        ]);
+        ];
       } else if (templateId === "hebrewSchool") {
         setPdfPoints({ width: 595, height: 842 });
-        setFields([
+        initialFields = [
           { id: "h1", name: "txtTopDate", type: "text", x: 63.9, y: 49.3, w: 15.0, h: 1.6, page: 1, value: "10/06/2026", align: "center", fontSize: 12 },
           { id: "h2", name: "txtSigneeName", type: "text", x: 55.9, y: 55.1, w: 14.6, h: 1.6, page: 1, value: "נטלי קויפמן", align: "center", fontSize: 12 },
           { id: "h3", name: "txtSchoolName", type: "text", x: 41.8, y: 57.3, w: 16.6, h: 1.6, page: 1, value: "מיה סיידא", align: "center", fontSize: 12 },
@@ -161,10 +546,13 @@ export default function App() {
           { id: "h9", name: "txtParent1Name", type: "text", x: 52.3, y: 80.9, w: 24.0, h: 1.6, page: 1, value: "קויפמן נטלי", align: "center", fontSize: 12 },
           { id: "h10", name: "txtParent1Address", type: "text", x: 26.0, y: 80.9, w: 15.4, h: 1.6, page: 1, value: "זמסקי מאיר 6 ראשל\"צ", align: "center", fontSize: 12 },
           { id: "h11", name: "txtParent1Date", type: "text", x: 52.3, y: 83.1, w: 24.0, h: 1.6, page: 1, value: "10/06/2026", align: "center", fontSize: 12 },
-          { id: "h12", name: "Button_Signee", type: "button", x: 27.7, y: 87.4, w: 13.6, h: 2.0, page: 1, value: "נטלי קויפמן", align: "center", fontSize: 11 },
-          { id: "h13", name: "Button_School", type: "button", x: 27.1, y: 82.8, w: 13.6, h: 2.0, page: 1, value: "מיה סיידא", align: "center", fontSize: 11 },
-        ]);
+          { id: "h12", name: "btnSignee", type: "button", x: 27.7, y: 87.4, w: 13.6, h: 2.0, page: 1, value: "נטלי קויפמן", align: "center", fontSize: 11 },
+          { id: "h13", name: "btnSchool", type: "button", x: 27.1, y: 82.8, w: 13.6, h: 2.0, page: 1, value: "מיה סיידא", align: "center", fontSize: 11 },
+        ];
       }
+      setFields(initialFields);
+      setFieldsHistory([initialFields]);
+      setHistoryIndex(0);
       setSelectedFieldId(null);
     }
   }, [docSource, templateId]);
@@ -654,12 +1042,29 @@ export default function App() {
 
     setErrorMessage(null);
     setFields([]);
+    setFieldsHistory([[]]);
+    setHistoryIndex(0);
     setSelectedFieldId(null);
 
     if (file.type === "application/pdf") {
       setPdfFile(file);
       setDocSource("pdf");
       setCurrentPage(1);
+
+      const xfaReader = new FileReader();
+      xfaReader.onload = async (event) => {
+        const buffer = event.target?.result as ArrayBuffer;
+        if (buffer) {
+          const res = await extractAndParseXFA(buffer);
+          if (res.xfaDetected) {
+            setXfaData(res);
+            setShowXfaWizard(true);
+          } else {
+            setXfaData(null);
+          }
+        }
+      };
+      xfaReader.readAsArrayBuffer(file);
     } else if (file.type.startsWith("image/")) {
       const reader = new FileReader();
       reader.onload = (event) => {
@@ -735,35 +1140,57 @@ export default function App() {
       }
 
       if (data.fields && Array.isArray(data.fields)) {
-        // Map detected fields from percentages of the cropped area back to global page coordinates
+        const mapWidth = data.page_dimensions?.width || pdfPoints.width || 595;
+        const mapHeight = data.page_dimensions?.height || pdfPoints.height || 842;
+
         const detectedFields: FormField[] = data.fields.map((f: any, idx: number) => {
-          let fx = f.x;
-          let fy = f.y;
-          let fw = f.w;
-          let fh = f.h;
+          let fx = (f.x / mapWidth) * 100;
+          let fy = (f.y / mapHeight) * 100;
+          let fw = (f.width / mapWidth) * 100;
+          let fh = (f.height / mapHeight) * 100;
 
           if (cropRect) {
-            // Map relative local cropped bounding percentage to original raw global coordinates
-            fx = cropRect.x + (f.x / 100) * cropRect.w;
-            fy = cropRect.y + (f.y / 100) * cropRect.h;
-            fw = (f.w / 100) * cropRect.w;
-            fh = (f.h / 100) * cropRect.h;
+            // If cropRect was active, the base64 image represents only a sliced bounds.
+            // But since the server endpoint receives the scaled dimensions, standard mapping applies.
+            fx = cropRect.x + (fx / 100) * cropRect.w;
+            fy = cropRect.y + (fy / 100) * cropRect.h;
+            fw = (fw / 100) * cropRect.w;
+            fh = (fh / 100) * cropRect.h;
+          }
+
+          let mappedType: "text" | "textarea" | "checkbox" | "image" | "button" = "text";
+          const lowerType = (f.type || "text").toLowerCase();
+          if (lowerType === "checkbox") {
+            mappedType = "checkbox";
+          } else if (lowerType === "signature" || lowerType === "image") {
+            mappedType = "image";
+          } else if (lowerType === "button") {
+            mappedType = "button";
+          } else if (lowerType === "textarea") {
+            mappedType = "textarea";
+          } else {
+            mappedType = "text";
           }
 
           return {
             id: `gemini-${Date.now()}-${idx}`,
             name: f.name || `txtField${idx + 1}`,
-            type: f.type || "text",
+            type: mappedType,
             x: Number(Math.max(0, Math.min(100, fx)).toFixed(2)),
             y: Number(Math.max(0, Math.min(100, fy)).toFixed(2)),
             w: Number(Math.max(0.5, Math.min(100, fw)).toFixed(2)),
             h: Number(Math.max(0.5, Math.min(100, fh)).toFixed(2)),
-            page: currentPage,
-            align: language === "rtl" ? "right" : "left"
+            page: f.page || currentPage,
+            align: language === "rtl" ? "right" : "left",
+            label: f.label || "",
+            confidence: f.confidence || 1.0,
+            reasoning: f.reasoning || ""
           };
         });
 
-        setFields(detectedFields);
+        // Save a restore point snapshot backup automatically before overwriting
+        createBackupSnapshot("pre_ai_detect");
+        setFieldsWithHistory(detectedFields);
         setSelectedFieldId(detectedFields[0]?.id || null);
         // Turn off crop mode after successful active focusing
         setCropModeActive(false);
@@ -887,6 +1314,12 @@ export default function App() {
             }
             return current;
           });
+        } else {
+          // Commit final mouse drag coordinate state changes to Undo/Redo stack
+          setFields((latest) => {
+            pushHistoryState(latest);
+            return latest;
+          });
         }
         setDragState(null);
       }
@@ -952,47 +1385,63 @@ export default function App() {
     };
   }, [dragState]);
 
-  // Keyboard Delete Selected Field
+  // Keyboard Shortcuts: Delete, Undo, Redo
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (selectedFieldId && (e.key === "Delete" || e.key === "Backspace")) {
-        // Only trigger if we aren't editing a text input
-        if (document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "SELECT") {
-          deleteField(selectedFieldId);
-        }
+      // Ignore shortcuts if typing inside active interactive form inputs
+      if (
+        document.activeElement?.tagName === "INPUT" || 
+        document.activeElement?.tagName === "SELECT" || 
+        document.activeElement?.tagName === "TEXTAREA"
+      ) {
+        return;
+      }
+
+      // Undo Trigger (Ctrl + Z)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        handleUndo();
+      }
+      // Redo Trigger (Ctrl + Y)
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        handleRedo();
+      }
+      // Delete selected item trigger (Delete or Backspace)
+      else if (selectedFieldId && (e.key === "Delete" || e.key === "Backspace")) {
+        deleteField(selectedFieldId);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedFieldId]);
+  }, [selectedFieldId, historyIndex, fieldsHistory, fields]);
 
   // Edit fields operations
   const updateFieldProperty = (id: string, property: keyof FormField, value: any) => {
-    setFields((prev) =>
-      prev.map((f) => {
-        if (f.id !== id) return f;
-        const updated = { ...f, [property]: value };
-        
-        // Auto suffix correction to follow naming guidelines strictly
-        if (property === "name") {
-          // ensure no whitespace
-          updated.name = value.replace(/\s+/g, "");
-        }
-        if (property === "type") {
-          // enforce prefix convention automatically
-          const baseName = f.name.replace(/^(txt|chk|img)/, "");
-          const prefix = value === "checkbox" ? "chk" : value === "image" ? "img" : "txt";
-          const firstCharLower = prefix;
-          const camelRest = baseName.charAt(0).toUpperCase() + baseName.slice(1);
-          updated.name = firstCharLower + (baseName ? camelRest : "ValidatedField");
-        }
-        return updated;
-      })
-    );
+    const updatedFields = fields.map((f) => {
+      if (f.id !== id) return f;
+      const updated = { ...f, [property]: value };
+      
+      // Auto suffix correction to follow naming guidelines strictly
+      if (property === "name") {
+        // ensure no whitespace
+        updated.name = value.replace(/\s+/g, "");
+      }
+      if (property === "type") {
+        // enforce prefix convention automatically
+        const baseName = f.name.replace(/^(txt|chk|img|btn|txa|sig)/, "");
+        const prefix = value === "checkbox" ? "chk" : value === "image" ? "img" : "txt";
+        const camelRest = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+        updated.name = prefix + (baseName ? camelRest : "ValidatedField");
+      }
+      return updated;
+    });
+    setFieldsWithHistory(updatedFields);
   };
 
   const deleteField = (id: string) => {
-    setFields(prev => prev.filter(f => f.id !== id));
+    const updated = fields.filter(f => f.id !== id);
+    setFieldsWithHistory(updated);
     if (selectedFieldId === id) {
       setSelectedFieldId(null);
     }
@@ -1013,7 +1462,7 @@ export default function App() {
       value: "",
       fontSize: 12
     };
-    setFields([...fields, newField]);
+    setFieldsWithHistory([...fields, newField]);
     setSelectedFieldId(newId);
   };
 
@@ -1045,6 +1494,28 @@ export default function App() {
     return [header, ...rows].join("\n");
   };
 
+  const generateJsonContent = (): string => {
+    const formatted = fields.map((f) => {
+      const pdfCoords = convertToPdfCoordinates(f);
+      return {
+        id: f.id,
+        name: f.name,
+        type: f.type,
+        page: f.page || 1,
+        alignment: f.align || "center",
+        percentCoords: { x: f.x, y: f.y, w: f.w, h: f.h },
+        pdfCoords: {
+          x: pdfCoords.x,
+          y: pdfCoords.y,
+          width: pdfCoords.w,
+          height: pdfCoords.h,
+        },
+        value: f.value || "",
+      };
+    });
+    return JSON.stringify(formatted, null, 2);
+  };
+
   // Copy CSV contents to clipboard
   const copyToClipboard = () => {
     const cv = generateCsvContent();
@@ -1064,6 +1535,20 @@ export default function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadJsonFile = () => {
+    const content = generateJsonContent();
+    const blob = new Blob([content], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `xdp_fields_spec_all.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // Convert visual layouts directly to interactive PDF with native fillable form inputs
@@ -1388,20 +1873,41 @@ export default function App() {
                       } : {})
                     };
 
-                    const textAlignmentClass = isBtnStyle || f.align === "center"
-                      ? "justify-center text-center font-bold"
-                      : f.align === "right"
-                      ? "justify-end text-right"
-                      : "justify-start text-left";
+                    const fieldIssues = getValidationResults(fields).filter((issue) => issue.fieldId === f.id);
+                    const hasErrors = fieldIssues.some((issue) => issue.type === "error");
+                    const hasWarnings = fieldIssues.some((issue) => issue.type === "warning");
+
+                    let statusBorderClass = "";
+                    if (isSelected) {
+                      statusBorderClass = "ring-2 ring-blue-500 ring-offset-1 z-20";
+                    } else if (hasErrors) {
+                      statusBorderClass = "border-2 border-rose-500 bg-rose-500/5 hover:border-rose-600 hover:shadow-rose-100 hover:shadow-md z-10";
+                    } else if (hasWarnings) {
+                      statusBorderClass = "border-2 border-amber-400 bg-amber-400/5 hover:border-amber-500 hover:shadow-amber-100 hover:shadow-md z-10";
+                    } else {
+                      statusBorderClass = `border-2 ${color.bg} ${color.border} z-10`;
+                    }
 
                     return (
                       <div
                         id={`field_overlay_${f.id}`}
                         key={f.id}
                         style={visualStyle}
-                        className={`absolute ${isBtnStyle ? "" : `border-2 ${color.bg} ${color.border}`} ${isSelected ? "ring-2 ring-blue-500 ring-offset-1 z-20" : "z-10"} group hover:shadow-md cursor-move flex items-center justify-center transition-shadow overflow-hidden rounded-sm ${cropModeActive ? "pointer-events-none" : ""}`}
+                        className={`absolute ${isBtnStyle ? "" : statusBorderClass} group hover:shadow-md cursor-move flex items-center justify-center transition-shadow overflow-hidden rounded-sm ${cropModeActive ? "pointer-events-none" : ""}`}
                         onMouseDown={(e) => handleInteractionMouseDown(e, f, "drag")}
                       >
+                        {/* Status glowing corner light badge */}
+                        <div 
+                          className={`absolute top-1 left-1 w-2 h-2 rounded-full border border-white pointer-events-none z-30 transition-transform duration-100 scale-90 group-hover:scale-110 ${
+                            hasErrors ? "bg-rose-500 shadow-[0_0_5px_#f43f5e]" : hasWarnings ? "bg-amber-400 shadow-[0_0_5px_#f59e0b]" : "bg-emerald-500 shadow-[0_0_5px_#10b981]"
+                          }`} 
+                          title={
+                            fieldIssues.length > 0 
+                              ? `Issues with field ${f.name}:\n` + fieldIssues.map(i => `• ${i.message}`).join('\n') 
+                              : `Field ${f.name} is aligned and valid`
+                          }
+                        />
+
                         {/* Selected overlay item text label */}
                         {!isCheckbox ? (
                           <div 
@@ -1541,6 +2047,29 @@ export default function App() {
               🖱️ Drag to Move | Drag corner handle to Resize | Click holding Shift/Empty space to draw
             </div>
 
+            {/* Undo / Redo Control Bar */}
+            <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+              <button
+                id="btn_undo"
+                disabled={historyIndex <= 0}
+                onClick={handleUndo}
+                className="p-1 hover:bg-white rounded-md text-slate-600 disabled:opacity-40 disabled:hover:bg-transparent transition-colors flex items-center justify-center cursor-pointer"
+                title="Undo (Ctrl+Z)"
+              >
+                <Undo2 className="w-3.5 h-3.5" />
+              </button>
+              <span className="h-4 w-[1px] bg-slate-200" />
+              <button
+                id="btn_redo"
+                disabled={historyIndex >= fieldsHistory.length - 1}
+                onClick={handleRedo}
+                className="p-1 hover:bg-white rounded-md text-slate-600 disabled:opacity-40 disabled:hover:bg-transparent transition-colors flex items-center justify-center cursor-pointer"
+                title="Redo (Ctrl+Y)"
+              >
+                <Redo2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
             {/* Zoom Widget */}
             <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg">
               <button 
@@ -1646,6 +2175,120 @@ export default function App() {
             <div className="text-[9px] text-slate-400 text-center leading-relaxed font-sans border-t border-blue-100 pt-2 flex items-center justify-center gap-1">
               <Info className="w-3 h-3 text-blue-500 shrink-0" />
               <span>Downloads a real, multi-page fillable PDF instantly.</span>
+            </div>
+          </div>
+
+          {/* Truth-Code Mapping File Upload & Text Area Panel */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col gap-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <GitMerge className="w-4.5 h-4.5 text-indigo-600" />
+                <div>
+                  <h2 className="font-bold text-slate-900 text-sm">Truth-Code Mapping</h2>
+                  <p className="text-[10px] text-slate-500 font-medium">Map detected labels to integration/system names</p>
+                </div>
+              </div>
+              <HelpCircle className="w-4 h-4 text-slate-400 shrink-0 cursor-help" title="To integrate with external systems, upload a JSON mapping of {'Detected Label': 'system_name'}" />
+            </div>
+
+            <div className="flex flex-col gap-3">
+              {/* File Upload Selector */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] font-bold text-slate-500 uppercase">Load JSON Mapping File:</label>
+                <div className="flex items-center gap-2">
+                  <label className="flex-1 flex items-center justify-center gap-2 border border-dashed border-slate-200 hover:border-indigo-400 rounded-xl p-2.5 bg-slate-50 text-[11px] font-semibold text-slate-600 hover:text-indigo-600 cursor-pointer transition-colors relative">
+                    <Upload className="w-3.5 h-3.5 text-indigo-500" />
+                    <span className="truncate">{truthCodeFileName || "Select mapping.json..."}</span>
+                    <input 
+                      type="file" 
+                      accept=".json" 
+                      className="hidden" 
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setTruthCodeFileName(file.name);
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                          try {
+                            const parsed = JSON.parse(event.target?.result as string);
+                            if (parsed && typeof parsed === "object") {
+                              setTruthCodeMapping(parsed);
+                              applyLoadedMappingToCurrentFields(parsed);
+                              setErrorMessage(null);
+                            } else {
+                              throw new Error("Invalid structure. Must be a key-value Map JSON.");
+                            }
+                          } catch (err: any) {
+                            setErrorMessage("Failed to parse mapping file: " + err.message);
+                          }
+                        };
+                        reader.readAsText(file);
+                      }}
+                    />
+                  </label>
+                  {Object.keys(truthCodeMapping).length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTruthCodeMapping({});
+                        setTruthCodeFileName("");
+                      }}
+                      className="p-2 border border-slate-200 hover:border-rose-300 rounded-xl bg-slate-50 text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+                      title="Clear Mapping"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Paste or Preview Interactive Form */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[10px] font-bold text-slate-500 uppercase">Paste Schema Map (JSON):</label>
+                <textarea
+                  placeholder='{"First Name": "input_fname", "Full Address": "customer_addr"}'
+                  className="w-full h-20 p-2 border border-slate-200 rounded-xl font-mono text-[10px] text-slate-700 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-450 outline-hidden bg-slate-50"
+                  value={Object.keys(truthCodeMapping).length > 0 ? JSON.stringify(truthCodeMapping, null, 2) : ""}
+                  onChange={(e) => {
+                    const text = e.target.value;
+                    if (!text) {
+                      setTruthCodeMapping({});
+                      return;
+                    }
+                    try {
+                      const parsed = JSON.parse(text);
+                      if (parsed && typeof parsed === "object") {
+                        setTruthCodeMapping(parsed);
+                        applyLoadedMappingToCurrentFields(parsed);
+                        setErrorMessage(null);
+                      }
+                    } catch (err) {
+                      // ignore parsing errors while editing
+                    }
+                  }}
+                />
+              </div>
+
+              {/* Active Mapping Status */}
+              {Object.keys(truthCodeMapping).length > 0 ? (
+                <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-250 text-[10px] text-emerald-800 flex items-center justify-between gap-1">
+                  <div className="flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span className="font-semibold">{Object.keys(truthCodeMapping).length} mapping tags active</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => applyLoadedMappingToCurrentFields(truthCodeMapping)}
+                    className="text-[9px] bg-emerald-600 hover:bg-emerald-700 text-white font-bold p-1 px-2 rounded-md uppercase cursor-pointer"
+                  >
+                    Remap Currently Loaded
+                  </button>
+                </div>
+              ) : (
+                <div className="p-2.5 rounded-xl bg-slate-50 text-[10px] text-slate-500 italic text-center border border-slate-100">
+                  No truth-code mappings active. Fields will use LLM suggested default names.
+                </div>
+              )}
             </div>
           </div>
 
@@ -1805,6 +2448,203 @@ export default function App() {
             )}
           </div>
 
+          {/* Live Diagnostics & Alignment Center */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col gap-3">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+              <h2 className="font-semibold text-slate-850 flex items-center gap-2">
+                <ShieldCheck className="w-4.5 h-4.5 text-blue-600" />
+                Live Diagnostics Center
+              </h2>
+              <span className={`text-[10px] uppercase font-bold py-0.5 px-2 rounded-full font-mono ${
+                getValidationResults(fields).filter(i => i.type === "error").length > 0
+                  ? "bg-rose-100 text-rose-700 animate-pulse"
+                  : getValidationResults(fields).filter(i => i.type === "warning").length > 0
+                  ? "bg-amber-100 text-amber-700"
+                  : "bg-emerald-100 text-emerald-700"
+              }`}>
+                {getValidationResults(fields).filter(i => i.type === "error").length} Errors • {getValidationResults(fields).filter(i => i.type === "warning").length} Warnings
+              </span>
+            </div>
+
+            {getValidationResults(fields).length > 0 ? (
+              <div className="flex flex-col gap-2">
+                <div className="max-h-[140px] overflow-y-auto space-y-1.5 pr-1 text-xs">
+                  {getValidationResults(fields).map((issue, idx) => {
+                    return (
+                      <div 
+                        key={idx} 
+                        className={`p-2 rounded-lg border text-[11px] flex items-start gap-1.5 transition-colors ${
+                          issue.type === "error" 
+                            ? "bg-rose-50/75 border-rose-100 text-rose-800" 
+                            : "bg-amber-50/75 border-amber-100 text-amber-800"
+                        }`}
+                      >
+                        <span className="mt-0.5 font-bold shrink-0">{issue.type === "error" ? "❌" : "⚠️"}</span>
+                        <div className="flex-1 min-w-0">
+                          <span 
+                            className="font-bold underline cursor-pointer pr-1 truncate block sm:inline" 
+                            onClick={() => {
+                              setSelectedFieldId(issue.fieldId);
+                              const f = fields.find(itm => itm.id === issue.fieldId);
+                              if (f && f.page && f.page !== currentPage) {
+                                setCurrentPage(f.page);
+                              }
+                            }}
+                          >
+                            {issue.fieldName}:
+                          </span>
+                          <span>{issue.message}</span>
+                          <button
+                            type="button"
+                            onClick={() => autofixIssue(issue)}
+                            className={`block mt-1 font-bold text-[10px] uppercase tracking-wide underline flex items-center gap-0.5 transition-colors cursor-pointer ${
+                              issue.type === "error" 
+                                ? "text-rose-600 hover:text-rose-900" 
+                                : "text-amber-600 hover:text-amber-900"
+                            }`}
+                          >
+                            ⚡ Autofix Issue
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      createBackupSnapshot("pre_autofix_all");
+                      const issues = getValidationResults(fields);
+                      let currentFields = [...fields];
+                      issues.forEach(issue => {
+                        currentFields = currentFields.map(f => {
+                          if (f.id !== issue.fieldId) return f;
+                          // apply exact correction
+                          if (issue.code === "BOUNDARY") {
+                            return {
+                              ...f,
+                              x: Math.max(0, Math.min(100, f.x)),
+                              y: Math.max(0, Math.min(100, f.y)),
+                              w: Math.min(f.w, 100 - f.x),
+                              h: Math.min(f.h, 100 - f.y)
+                            };
+                          }
+                          if (issue.code === "DUPLICATE_NAME") {
+                            return { ...f, name: `${f.name}_unique` };
+                          }
+                          if (issue.code === "OVERLAP") {
+                            return { ...f, y: Number((f.y + 3.5).toFixed(2)) };
+                          }
+                          if (issue.code === "COLLISION") {
+                            return { ...f, y: Number((f.y + 4.0).toFixed(2)) };
+                          }
+                          if (issue.code === "ASPECT_RATIO") {
+                            if (f.type === "checkbox") {
+                              return { ...f, w: 2.2, h: 2.2 };
+                            }
+                            if (f.type === "image") {
+                              return { ...f, w: 16.0, h: 6.0 };
+                            }
+                          }
+                          return f;
+                        });
+                      });
+                      setFieldsWithHistory(currentFields);
+                    }}
+                    className="py-1.5 px-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-all flex items-center justify-center gap-1 cursor-pointer hover:shadow-xs active:translate-y-0.5"
+                  >
+                    ⚡ Autofix All Issues
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      createBackupSnapshot("pre_name_standardize");
+                      applyNamingConventionAndStandardize();
+                    }}
+                    className="py-1.5 px-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-all flex items-center justify-center gap-1 cursor-pointer hover:shadow-xs active:translate-y-0.5"
+                  >
+                    ✍️ Apply Naming rules
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 bg-emerald-50/50 border border-emerald-100 rounded-xl text-center flex flex-col items-center justify-center gap-1 text-emerald-800">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 animate-bounce" />
+                <span className="text-xs font-bold uppercase tracking-wider">Perfect Alignment Verified</span>
+                <span className="text-[10px] text-emerald-600 font-medium">All PDF fields are safe, non-colliding, and properly sized.</span>
+              </div>
+            )}
+          </div>
+
+          {/* Backups & Snapshots Manager */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col gap-3">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+              <h2 className="font-semibold text-slate-850 flex items-center gap-2">
+                <History className="w-4.5 h-4.5 text-blue-600" />
+                History & Backups ({backups.length})
+              </h2>
+              <button
+                type="button"
+                onClick={() => {
+                  const label = prompt("Enter snapshot note:", `Manual Save Point ${backups.length + 1}`);
+                  if (label !== null) {
+                    createBackupSnapshot(label || undefined);
+                  }
+                }}
+                className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-700 py-1 px-2 rounded-md font-bold uppercase tracking-wider flex items-center gap-1 cursor-pointer"
+              >
+                <Save className="w-3 h-3 text-blue-500" /> Snapshot
+              </button>
+            </div>
+
+            {backups.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                <div className="max-h-[140px] overflow-y-auto space-y-1 pr-1 text-[11px]">
+                  {backups.map((bak) => (
+                    <div 
+                      key={bak.timestamp} 
+                      className="p-2 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-between gap-1 hover:bg-slate-100/50 transition-colors"
+                    >
+                      <div className="truncate flex-1 min-w-0 pr-1">
+                        <div className="font-semibold text-slate-700 truncate">{bak.description}</div>
+                        <div className="text-[9px] text-slate-400 font-mono">
+                          {new Date(bak.timestamp).toLocaleTimeString()} ({bak.fieldsCount} fields)
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (confirm(`Restore changes to "${bak.description}"?`)) {
+                              setFieldsWithHistory(bak.fields);
+                            }
+                          }}
+                          className="py-0.5 px-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-md font-bold text-[9px] uppercase tracking-wide cursor-pointer transition-colors"
+                        >
+                          Restore
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteBackupSnapshot(bak.id)}
+                          className="p-1 hover:bg-rose-50 text-slate-400 hover:text-rose-500 rounded transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="text-[9px] text-slate-400 leading-normal text-center">
+                  * Snapshots reside securely in local database to survive browser refreshes. Max 50.
+                </div>
+              </div>
+            ) : (
+              <p className="text-xxs text-slate-400 text-center py-4">No custom layout snapshots recorded yet.</p>
+            )}
+          </div>
+
           {/* Fields List Spreadsheet Block */}
           <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs flex flex-col gap-3">
             <h2 className="font-semibold text-slate-900 flex items-center gap-2 border-b border-slate-100 pb-2">
@@ -1841,13 +2681,37 @@ export default function App() {
                           }}
                         >
                           <td className="p-2 font-mono font-semibold text-slate-500 whitespace-nowrap">P. {f.page || 1}</td>
-                          <td className="p-2 truncate font-mono max-w-[120px]">{f.name}</td>
-                          <td className="p-2">
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full capitalize font-semibold bg-slate-100">
-                              {f.type}
-                            </span>
+                          <td className="p-1 max-w-[150px]" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="text"
+                              value={f.name}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const updated = fields.map(item => item.id === f.id ? { ...item, name: val } : item);
+                                setFieldsWithHistory(updated);
+                              }}
+                              className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:bg-white focus:border-blue-400 focus:ring-1 focus:ring-blue-400 p-1 px-1.5 rounded font-mono text-[11px] text-slate-800 font-semibold outline-hidden"
+                              placeholder="Field Name"
+                            />
                           </td>
-                          <td className="p-2 font-mono text-right text-[10px]">
+                          <td className="p-1" onClick={(e) => e.stopPropagation()}>
+                            <select
+                              value={f.type}
+                              onChange={(e) => {
+                                const val = e.target.value as any;
+                                const updated = fields.map(item => item.id === f.id ? { ...item, type: val } : item);
+                                setFieldsWithHistory(updated);
+                              }}
+                              className="bg-slate-50 border border-slate-200 hover:border-slate-300 p-1 rounded text-[10px] uppercase font-bold text-slate-600 focus:bg-white outline-hidden cursor-pointer"
+                            >
+                              <option value="text">Text</option>
+                              <option value="textarea">Multi</option>
+                              <option value="checkbox">Check</option>
+                              <option value="image">Sign</option>
+                              <option value="button">Button</option>
+                            </select>
+                          </td>
+                          <td className="p-2 font-mono text-right text-[10px] text-slate-500">
                             {x}, {y}, {w}, {h}
                           </td>
                         </tr>
@@ -1861,29 +2725,37 @@ export default function App() {
             )}
           </div>
 
-          {/* Raw Export CSV Block */}
+          {/* Raw Export CSV/JSON Block */}
           <div className="bg-slate-950 text-slate-100 rounded-2xl p-5 shadow-lg relative overflow-hidden flex flex-col gap-3">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
               <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                <Download className="w-4 h-4 text-emerald-400" />
-                Raw Field-Spec CSV
+                <Download className="w-4 h-4 text-sky-400" />
+                Raw Fields Mapping Exporters
               </h2>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <button
                   id="btn_copy_csv"
                   onClick={copyToClipboard}
-                  className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg hover:text-white transition-colors"
-                  title="Copy to Clipboard"
+                  className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg hover:text-white transition-colors cursor-pointer"
+                  title="Copy CSV to Clipboard"
                 >
                   {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 </button>
                 <button
                   id="btn_download_csv"
                   onClick={downloadCsvFile}
-                  className="bg-emerald-600 hover:bg-emerald-700 font-bold text-white text-[10px] uppercase tracking-wide py-1 px-2 rounded-lg flex items-center gap-1 transition-colors"
+                  className="bg-emerald-600 hover:bg-emerald-700 font-bold text-white text-[10px] uppercase tracking-wide py-1 px-2 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
                   title="Download File-spec CSV"
                 >
-                  <Download className="w-3 h-3" /> Export
+                  <Download className="w-3 h-3" /> CSV
+                </button>
+                <button
+                  id="btn_download_json"
+                  onClick={downloadJsonFile}
+                  className="bg-blue-600 hover:bg-blue-700 font-bold text-white text-[10px] uppercase tracking-wide py-1 px-2 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Download File-spec JSON mapping"
+                >
+                  <FileJson className="w-3 h-3" /> JSON
                 </button>
               </div>
             </div>
@@ -1903,6 +2775,91 @@ export default function App() {
       <footer className="bg-white border-t border-slate-200 mt-auto py-4 text-center text-xs text-slate-400 font-medium">
         PDF Form Field Locator &copy; {new Date().getFullYear()} &middot; Built with Gemini 3.5 Flash visual intelligence
       </footer>
+
+      {/* XFA Wizard Modal */}
+      <AnimatePresence>
+        {showXfaWizard && xfaData && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl border border-slate-200 p-6 max-w-md w-full shadow-2xl flex flex-col gap-4 text-slate-700"
+            >
+              <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
+                <div className="bg-indigo-100 text-indigo-700 p-2.5 rounded-2xl">
+                  <FileCode className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-base">XDP/XFA XML Data Found</h3>
+                  <p className="text-xs text-slate-500 font-medium font-semibold">Predefined form schema detected.</p>
+                </div>
+              </div>
+
+              <div className="space-y-2 text-xs leading-relaxed">
+                <p>
+                  We successfully extracted an Adobe Acrobat XFA XML template stream with <strong className="text-indigo-600 font-bold">{xfaData.fields.length} predefined form fields</strong>.
+                </p>
+                <p className="text-slate-550">
+                  You can merge these original XML fields directly or keep the canvas empty to perform visual LLM-based detection.
+                </p>
+
+                {/* List of parsed fields preview */}
+                <div className="max-h-[120px] overflow-y-auto border border-slate-100 rounded-xl bg-slate-50 p-2.5 space-y-1 font-mono text-[9px] text-slate-500">
+                  {xfaData.fields.map((f, i) => (
+                    <div key={i} className="flex items-center justify-between border-b border-slate-200/50 pb-1">
+                      <span className="truncate max-w-[180px] font-bold text-slate-700">{f.name}</span>
+                      <span className="shrink-0 uppercase bg-slate-200/50 px-1 rounded font-sans text-[8px] font-semibold">{f.type}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const mapped: FormField[] = xfaData.fields.map((f, idx) => {
+                      const docWidth = pdfPoints.width || 612;
+                      const docHeight = pdfPoints.height || 792;
+                      
+                      const px = Number(((f.x / docWidth) * 100).toFixed(2));
+                      const py = Number(((f.y / docHeight) * 100).toFixed(2));
+                      const pw = Number(((f.w / docWidth) * 100).toFixed(2));
+                      const ph = Number(((f.h / docHeight) * 100).toFixed(2));
+
+                      return {
+                        id: `xfa-${Date.now()}-${idx}`,
+                        name: f.name,
+                        type: f.type,
+                        x: Math.max(0, Math.min(100, px)),
+                        y: Math.max(0, Math.min(100, py)),
+                        w: Math.max(0.5, Math.min(100, pw)),
+                        h: Math.max(0.5, Math.min(100, ph)),
+                        page: f.page || 1,
+                        label: f.label
+                      };
+                    });
+
+                    setFieldsWithHistory(mapped);
+                    setShowXfaWizard(false);
+                  }}
+                  className="py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-md active:translate-y-px transition-all cursor-pointer"
+                >
+                  <GitMerge className="w-4 h-4" /> Import {xfaData.fields.length} Fields
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowXfaWizard(false)}
+                  className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs flex items-center justify-center cursor-pointer transition-colors border border-slate-250 font-bold"
+                >
+                  Keep empty
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

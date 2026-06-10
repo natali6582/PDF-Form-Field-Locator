@@ -55,23 +55,28 @@ app.post("/api/detect-fields", async (req, res) => {
     // Strip header if any (e.g. "data:image/png;base64,")
     const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
 
+    const pagWidth = pageDimensions?.width || 595;
+    const pagHeight = pageDimensions?.height || 842;
+
     const prompt = `Analyze this page image of a form (Page ${pageNum || 1}) and detect all input areas, blanks, boxes, checkboxes, or signature fields.
+The target page dimensions are exactly ${pagWidth} wide x ${pagHeight} high points.
 For each detected field, provide:
-1. A unique, camelCase name prefixed with 'txt' for text (e.g., txtFullName), 'chk' for checkboxes (e.g., chkAgreed), or 'img' for signature paths/images (e.g., imgSignature).
-2. The field type: 'text', 'textarea', 'checkbox', or 'image'.
-3. The bounding box as percentages of the total image size (0 to 100):
-   - x: percentage from the left wall
-   - y: percentage from the top ceiling
-   - w: width as percentage of the page width
-   - h: height as percentage of the page height
+1. "name": A unique, camelCase suggested field name prefixed with 'txt' for text (e.g., txtFullName), 'chk' for checkboxes (e.g., chkAgreed), 'img' for signature fields (e.g., imgSignature), or 'dt' for dates (e.g., dtBirth).
+2. "type": One of: 'text', 'checkbox', 'signature', 'date', 'image', or 'dropdown'. Choose the best fitting classification.
+3. "page": The page number, which is ${pageNum || 1}.
+4. "x": Absolute horizontal offset in PDF points from the left-most corner (0 to ${pagWidth}).
+5. "y": Absolute vertical offset in PDF points from the top-most edge (0 to ${pagHeight}).
+6. "width": Absolute width of the field in PDF points (1 to ${pagWidth}).
+7. "height": Absolute height of the field in PDF points (1 to ${pagHeight}).
+8. "label": The literal printed/scanned text label detected nearby or associated with the field (e.g., "Full Name:", "Email Address:", "I agree bounds", "Date:").
+9. "confidence": A decimal confidence score between 0.0 and 1.0.
+10. "reasoning": A brief explanation of why this bounding area was located (e.g., "Found labeled box next to 'Full Name' of size 140x20").
 
-Be extremely precise. Locate line fields, underline blanks, boxed input grids, standard squares, and signature lines. Return the structure strictly matching the provided JSON schema. Ensure fields don't severely overlap.`;
+Return the structure matching the provided JSON schema. Ensure fields are properly separated and don't collide.`;
 
-    const systemInstruction = `You are a precise physical design assistant. Your job is to extract form-field bounding boxes from document images.
-You must find all empty lines, text input boxes, checkboxes, or image-signature placeholders.
-Specify coordinates (x, y, w, h) as percentage numbers from 0.0 to 100.0 related to the top-left origin.
-Classify types into 'text' (single-line), 'textarea' (multiline), 'checkbox' (toggle box), or 'image' (signature/image placeholder).
-Use clear prefix conventions: 'txt' (text, textarea), 'chk' (checkbox), 'img' (signature/image).`;
+    const systemInstruction = `You are an incredibly precise layout OCR and design intelligence agent. Your task is to detect blank PDF form fields on page images and output their precise coordinates in PDF points.
+The current page dimensions are ${pagWidth} x ${pagHeight} points.
+Classify field types strictly into: 'text', 'checkbox', 'signature', 'date', 'image', or 'dropdown'.`;
 
     const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
     let lastError: any = null;
@@ -100,40 +105,69 @@ Use clear prefix conventions: 'txt' (text, textarea), 'chk' (checkbox), 'img' (s
               properties: {
                 fields: {
                   type: Type.ARRAY,
-                  description: "A list of identified blank fields on the form page.",
+                  description: "A list of identified blank fields on the form page with absolute point coordinates.",
                   items: {
                     type: Type.OBJECT,
                     properties: {
                       name: {
                         type: Type.STRING,
-                        description: "Unique descriptive field name (e.g., txtInvestorName, chkQualify, imgSignature)",
+                        description: "CamelCase field name (e.g. txtInvestorName, chkQualify, imgSignature)",
                       },
                       type: {
                         type: Type.STRING,
-                        description: "Form element type: text, textarea, checkbox, image",
+                        description: "Form element type: text, checkbox, signature, date, image, dropdown",
+                      },
+                      page: {
+                        type: Type.INTEGER,
+                        description: "Page number on which this field lies",
                       },
                       x: {
                         type: Type.NUMBER,
-                        description: "X coordinate of top-left corner as percentage of width (0-100)",
+                        description: `Absolute X coordinate top-left corner in PDF points (0 to ${pagWidth})`,
                       },
                       y: {
                         type: Type.NUMBER,
-                        description: "Y coordinate of top-left corner as percentage of height (0-100)",
+                        description: `Absolute Y coordinate top-left corner in PDF points (0 to ${pagHeight})`,
                       },
-                      w: {
+                      width: {
                         type: Type.NUMBER,
-                        description: "Width of field as percentage of total page width (0-100)",
+                        description: "Width of field in PDF points",
                       },
-                      h: {
+                      height: {
                         type: Type.NUMBER,
-                        description: "Height of field as percentage of total page height (0-100)",
+                        description: "Height of field in PDF points",
                       },
+                      label: {
+                        type: Type.STRING,
+                        description: "Label text detected nearby (e.g. 'Full Name', 'Phone number')",
+                      },
+                      confidence: {
+                        type: Type.NUMBER,
+                        description: "Normalized placement confidence (0.0 to 1.0)",
+                      },
+                      reasoning: {
+                        type: Type.STRING,
+                        description: "Reasoning and visual cue description",
+                      }
                     },
-                    required: ["name", "type", "x", "y", "w", "h"],
+                    required: ["name", "type", "page", "x", "y", "width", "height"],
                   },
                 },
+                page_dimensions: {
+                  type: Type.OBJECT,
+                  description: "The point dimensions of the form page",
+                  properties: {
+                    width: { type: Type.NUMBER },
+                    height: { type: Type.NUMBER }
+                  },
+                  required: ["width", "height"]
+                },
+                detection_method: {
+                  type: Type.STRING,
+                  description: "Method of detection used"
+                }
               },
-              required: ["fields"],
+              required: ["fields", "page_dimensions"],
             },
           },
         });
@@ -279,30 +313,45 @@ app.post("/api/bake-pdf", async (req, res) => {
     
     const form = pdfDoc.getForm();
     const isRtl = language === "rtl";
-    
+    const failedFieldsReport: Array<{ name: string; type: string; page: number; error: string }> = [];
+
+    // 2. Embed a standard font once per PDF
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
     if (fields && Array.isArray(fields)) {
       for (const f of fields) {
-        // Handle pages bounds and coordinate calculation
-        const pageIndex = Math.max(0, Math.min(pdfDoc.getPageCount() - 1, (f.page || 1) - 1));
-        const pdfPage = pdfDoc.getPage(pageIndex);
-        const { width, height } = pdfPage.getSize();
-        
-        const xPos = (f.x / 100) * width;
-        // top-left to bottom-left relative mapping
-        const yPos = height - ((f.y + f.h) / 100) * height;
-        const wBounds = (f.w / 100) * width;
-        const hBounds = (f.h / 100) * height;
-        
-        // Ensure name contains no spaces and is completely unique
-        let cleanName = (f.name || "field").replace(/\s+/g, "");
-        let uniqueName = cleanName;
-        let count = 1;
-        while (form.getFields().some((existing: any) => existing.getName() === uniqueName)) {
-          uniqueName = `${cleanName}_${count++}`;
-        }
-        
+        // Safe logging of field details
+        console.log(`Baking PDF Field: name=${f.name}, type=${f.type}, page=${f.page}, x=${f.x}, y=${f.y}, w=${f.w || f.width}, h=${f.h || f.height}`);
+
         try {
-          if (f.type === "checkbox") {
+          // Handle pages bounds and coordinate calculation safely
+          const pageIndex = Math.max(0, Math.min(pdfDoc.getPageCount() - 1, (f.page || 1) - 1));
+          const pdfPage = pdfDoc.getPage(pageIndex);
+          const { width, height } = pdfPage.getSize();
+
+          // Standardize incoming dimensions whether they are percentage or points
+          const fWidthPercentage = f.w !== undefined ? f.w : (f.width !== undefined ? (f.width / width) * 100 : 20);
+          const fHeightPercentage = f.h !== undefined ? f.h : (f.height !== undefined ? (f.height / height) * 100 : 5);
+
+          const xPos = (f.x / 100) * width;
+          // top-left to bottom-left relative mapping
+          const yPos = height - ((f.y + fHeightPercentage) / 100) * height;
+          const wBounds = (fWidthPercentage / 100) * width;
+          const hBounds = (fHeightPercentage / 100) * height;
+
+          // Ensure name contains no spaces and is completely unique
+          let cleanName = (f.name || "field").replace(/\s+/g, "");
+          let uniqueName = cleanName;
+          let count = 1;
+          while (form.getFields().some((existing: any) => existing.getName() === uniqueName)) {
+            uniqueName = `${cleanName}_${count++}`;
+          }
+
+          // Enforce strict field grouping requirements
+          const isCheckbox = f.type === "checkbox";
+          const isButtonOrImageOrSignature = f.type === "button" || f.type === "image" || f.type === "signature" || uniqueName.startsWith("imgSignature") || uniqueName.startsWith("signature");
+
+          if (isCheckbox) {
             const checkBox = form.createCheckBox(uniqueName);
             checkBox.addToPage(pdfPage, {
               x: xPos,
@@ -315,12 +364,17 @@ app.post("/api/bake-pdf", async (req, res) => {
             } catch (appErr) {
               console.warn(`Failed to update checkbox appearance for ${uniqueName}:`, appErr);
             }
-          } else if (f.type === "button") {
+          } else if (isButtonOrImageOrSignature) {
+            // Ensure button, image, and signature tags are created as interactive button/placeholder widgets
             const buttonField = form.createButton(uniqueName);
-            
-            // If the label contains non-ASCII characters (e.g., Hebrew), standard Helvetica will crash.
-            // We map common Hebrew labels to clean, functional English equivalents for the PDF stream.
+
             let labelText = f.value || f.name;
+            const isImageOrSigType = f.type === "image" || f.type === "signature" || uniqueName.startsWith("imgSignature") || uniqueName.startsWith("signature");
+            if (isImageOrSigType) {
+              labelText = "Signature";
+            }
+
+            // Map common Hebrew labels or symbols safely to avoid embed/font crashes
             const hasNonAscii = /[^\x00-\x7F]/.test(labelText);
             if (hasNonAscii) {
               const lowerCheck = labelText.toLowerCase();
@@ -335,9 +389,7 @@ app.post("/api/bake-pdf", async (req, res) => {
               }
             }
 
-            // Draw a high-fidelity visual bevel button on the physical PDF page under the interactive field coordinates.
-            // Matches: <border><edge stroke="raised"/><fill><color value="212,208,200"/></fill></border>
-            // Style matches gray value RGB (212, 208, 200) -> 0.83, 0.82, 0.78
+            // Draw high-fidelity bevel physical outline as requested
             try {
               pdfPage.drawRectangle({
                 x: xPos,
@@ -347,28 +399,25 @@ app.post("/api/bake-pdf", async (req, res) => {
                 color: rgb(212 / 255, 208 / 255, 200 / 255),
               });
 
-              // Left edge (white highlighting for raised border)
+              // Bevel edges
               pdfPage.drawLine({
                 start: { x: xPos, y: yPos },
                 end: { x: xPos, y: yPos + hBounds },
                 thickness: 1.5,
                 color: rgb(1, 1, 1),
               });
-              // Top edge (white highlighting for raised border)
               pdfPage.drawLine({
                 start: { x: xPos, y: yPos + hBounds },
                 end: { x: xPos + wBounds, y: yPos + hBounds },
                 thickness: 1.5,
                 color: rgb(1, 1, 1),
               });
-              // Bottom edge (dark grey shading for raised highlight)
               pdfPage.drawLine({
                 start: { x: xPos, y: yPos },
                 end: { x: xPos + wBounds, y: yPos },
                 thickness: 1.5,
                 color: rgb(0.25, 0.25, 0.25),
               });
-              // Right edge (dark grey shading for raised highlight)
               pdfPage.drawLine({
                 start: { x: xPos + wBounds, y: yPos },
                 end: { x: xPos + wBounds, y: yPos + hBounds },
@@ -376,15 +425,13 @@ app.post("/api/bake-pdf", async (req, res) => {
                 color: rgb(0.25, 0.25, 0.25),
               });
 
-              // Embed standard bold font to measure and center label perfectly
               const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
               const drawSize = f.fontSize || 10;
               const textWidth = boldFont.widthOfTextAtSize(labelText, drawSize);
               const textHeight = boldFont.heightAtSize(drawSize);
 
-              // Center text inside button bounds horizontally and vertically: Matches caption alignment <para vAlign="middle" hAlign="center"/>
               const drawX = xPos + (wBounds - textWidth) / 2;
-              const drawY = yPos + (hBounds - textHeight) / 2 + 1; // Minor offset correction for vertical visual alignment
+              const drawY = yPos + (hBounds - textHeight) / 2 + 1;
 
               pdfPage.drawText(labelText, {
                 x: drawX,
@@ -397,29 +444,26 @@ app.post("/api/bake-pdf", async (req, res) => {
               console.warn("Could not draw visual raised button decoration:", drawErr);
             }
 
-            buttonField.setLabel(labelText);
-            buttonField.addToPage(pdfPage, {
+            buttonField.addToPage(labelText, pdfPage, {
               x: xPos,
               y: yPos,
               width: wBounds,
               height: hBounds,
             });
 
-            // Force rendering appearance streams for PDF reader visibility support
             try {
               buttonField.updateAppearances();
             } catch (appErr) {
               console.warn(`Could not update button appearances for ${uniqueName}:`, appErr);
             }
           } else {
-            // text, textarea, or image signature placeholders
+            // Text-like fields, which strictly comprise text, textarea, or date
             const textField = form.createTextField(uniqueName);
             if (f.type === "textarea") {
               textField.enableMultiline();
             }
-            
-            // Text alignment support based on field property, defaulting to center as requested by the user
-            const fieldAlign = f.type === "image" ? "center" : (f.align || "center");
+
+            const fieldAlign = f.align || "center";
             if (fieldAlign === "right") {
               textField.setAlignment(TextAlignment.Right);
             } else if (fieldAlign === "center") {
@@ -427,17 +471,28 @@ app.post("/api/bake-pdf", async (req, res) => {
             } else {
               textField.setAlignment(TextAlignment.Left);
             }
-            
-            // Set preset pre-filled text value
+
             if (f.value !== undefined && f.value !== "") {
               textField.setText(f.value);
             }
 
-            // Custom font sizing matching the visual representation
-            if (f.fontSize) {
-              textField.setFontSize(f.fontSize);
-            } else {
-              textField.setFontSize(12);
+            // 1. Do not call setFontSize() directly on newly created fields unless they have DA
+            let hasDA = false;
+            try {
+              const acroField = (textField as any).acroField;
+              if (acroField && typeof acroField.getDA === "function") {
+                hasDA = !!acroField.getDA();
+              }
+            } catch (daError) {
+              hasDA = false;
+            }
+
+            if (hasDA) {
+              try {
+                textField.setFontSize(f.fontSize || 12);
+              } catch (fsErr) {
+                console.warn(`Could not set font size immediately for ${uniqueName}:`, fsErr);
+              }
             }
 
             textField.addToPage(pdfPage, {
@@ -447,11 +502,28 @@ app.post("/api/bake-pdf", async (req, res) => {
               height: hBounds,
             });
           }
-        } catch (fieldErr) {
-          console.error(`Error adding field ${f.name}:`, fieldErr);
+        } catch (fieldErr: any) {
+          // Robust error catching and logs
+          console.error(`Error adding field ${f.name} (type: ${f.type}, page: ${f.page}):`, fieldErr);
+          failedFieldsReport.push({
+            name: f.name || "unnamed",
+            type: f.type || "unknown",
+            page: f.page || 1,
+            error: fieldErr.message || String(fieldErr)
+          });
         }
       }
     }
+
+    // 3. After all fields are created and added, update appearances with the embedded font
+    try {
+      form.updateFieldAppearances(font);
+    } catch (uErr) {
+      console.warn("Global field appearances update completed with non-fatal issues:", uErr);
+    }
+
+    // Set header reporting any failures to the UI
+    res.setHeader("X-Failed-Fields", JSON.stringify(failedFieldsReport));
     
     // Save as Buffer and transfer
     const bakedPdfBytes = await pdfDoc.save();

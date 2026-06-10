@@ -1,6 +1,6 @@
 {
   "name": "PDF Form Field Locator",
   "description": "An interactive, LLM-powered visual workspace to auto-detect and position form fields on PDFs, producing precise coordinate specifications.",
-  "requestFramePermissions": ["camera"],
+  "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
