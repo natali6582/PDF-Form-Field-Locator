@@ -202,14 +202,17 @@ app.post("/api/bake-pdf", async (req, res) => {
     } else {
       // If user is bake-downloading a built-in template, construct a high-fidelity vector PDF page
       pdfDoc = await PDFDocument.create();
-      const page = pdfDoc.addPage([612, 792]);
+      const isA4 = templateId === "hebrewSchool";
+      const pw = isA4 ? 595 : 612;
+      const ph = isA4 ? 842 : 792;
+      const page = pdfDoc.addPage([pw, ph]);
       
       // Draw background styling depending on the template selected
       page.drawRectangle({
         x: 0,
         y: 0,
-        width: 612,
-        height: 792,
+        width: pw,
+        height: ph,
         color: rgb(0.98, 0.98, 0.96), // pristine warm paper off-white
       });
       
@@ -230,7 +233,7 @@ app.post("/api/bake-pdf", async (req, res) => {
         page.drawRectangle({ x: 35, y: 470, width: 542, height: 20, color: rgb(0.95, 0.95, 0.95) });
         page.drawText("Part II: Signatures & Certification", { x: 35, y: 380, size: 10 });
         page.drawText("Signature of U.S. Person:", { x: 35, y: 340, size: 9 });
-      } else {
+      } else if (templateId === "sub") {
         page.drawText("REAL ESTATE INVESTMENTS SUBSCRIPTION AGREEMENT", { x: 40, y: 740, size: 14 });
         page.drawText("SLATE CO-INVESTMENT FUND L.P. - CONFIDENTIAL MEMORANDUM", { x: 40, y: 722, size: 8 });
         page.drawLine({
@@ -245,6 +248,32 @@ app.post("/api/bake-pdf", async (req, res) => {
         page.drawText("II. QUALIFIED INVESTOR STATUS & CERTIFICATION", { x: 40, y: 550, size: 10 });
         page.drawText("Commitment Amount (USD):", { x: 45, y: 510, size: 9 });
         page.drawText("III. EXECUTION & AUTHORIZED SIGNATURE", { x: 40, y: 420, size: 10 });
+      } else {
+        // hebrewSchool registration form page visual layouts
+        page.drawText("Registration Form and Parental Declaration", { x: 40, y: 800, size: 14 });
+        page.drawText("טופס רישום והצהרת הורים לבית הספר", { x: 40, y: 780, size: 14 });
+        page.drawLine({ start: { x: 35, y: 760 }, end: { x: 560, y: 760 }, thickness: 2, color: rgb(0, 0, 0) });
+        
+        page.drawText("Declaration Details & Dates / פרטי הצהרה ותאריכים", { x: 35, y: 730, size: 10 });
+        page.drawText("Top Date / תאריך עשייה במערכת:", { x: 35, y: 700, size: 9 });
+        page.drawLine({ start: { x: 200, y: 700 }, end: { x: 300, y: 700 }, thickness: 1, color: rgb(0.5, 0.5, 0.5) });
+
+        page.drawText("Student & Signee Info / פרטי המוסד והמצהיר", { x: 35, y: 640, size: 10 });
+        page.drawText("Signee Name:", { x: 35, y: 610, size: 9 });
+        page.drawText("School / Institution Name:", { x: 35, y: 580, size: 9 });
+        page.drawText("Child Name / ID Number:", { x: 35, y: 550, size: 9 });
+
+        page.drawText("Criteria Checklist / מעקב והצהרות בריאותיות ולימודיות", { x: 35, y: 460, size: 10 });
+        page.drawText("[ ] Approved Grades Tracker / אישור ציונים", { x: 40, y: 430, size: 9 });
+        page.drawText("[ ] Learning Disabilities Declaration / הצהרת לקות", { x: 40, y: 410, size: 9 });
+        page.drawText("[ ] Behavioral or Discipline Status", { x: 40, y: 390, size: 9 });
+
+        page.drawText("Parents Details & Guardian Status / פרטי הורים והצהרה", { x: 35, y: 310, size: 10 });
+        page.drawText("Parent 1 Name / Parent 1 Address:", { x: 35, y: 280, size: 9 });
+        page.drawText("Parent 1 Date:", { x: 35, y: 250, size: 9 });
+
+        page.drawText("Digital Active Buttons / לחצני חתימה ואישור מסמכים דיגיטליים:", { x: 35, y: 150, size: 10 });
+        page.drawText("Interactive buttons programmed strictly to Adobe specifications.", { x: 35, y: 130, size: 8 });
       }
     }
     
@@ -281,6 +310,15 @@ app.post("/api/bake-pdf", async (req, res) => {
               width: wBounds,
               height: hBounds,
             });
+          } else if (f.type === "button") {
+            const buttonField = form.createButton(uniqueName);
+            buttonField.setLabel(f.value || f.name);
+            buttonField.addToPage(pdfPage, {
+              x: xPos,
+              y: yPos,
+              width: wBounds,
+              height: hBounds,
+            });
           } else {
             // text, textarea, or image signature placeholders
             const textField = form.createTextField(uniqueName);
@@ -289,7 +327,7 @@ app.post("/api/bake-pdf", async (req, res) => {
             }
             
             // Text alignment support based on field property, with overall language/RTL fallback
-            const fieldAlign = f.align || (isRtl ? "right" : "left");
+            const fieldAlign = f.type === "image" ? "center" : (f.align || (isRtl ? "right" : "left"));
             if (fieldAlign === "right") {
               textField.setAlignment(TextAlignment.Right);
             } else if (fieldAlign === "center") {
@@ -298,6 +336,18 @@ app.post("/api/bake-pdf", async (req, res) => {
               textField.setAlignment(TextAlignment.Left);
             }
             
+            // Set preset pre-filled text value
+            if (f.value !== undefined && f.value !== "") {
+              textField.setText(f.value);
+            }
+
+            // Custom font sizing matching the visual representation
+            if (f.fontSize) {
+              textField.setFontSize(f.fontSize);
+            } else {
+              textField.setFontSize(12);
+            }
+
             textField.addToPage(pdfPage, {
               x: xPos,
               y: yPos,

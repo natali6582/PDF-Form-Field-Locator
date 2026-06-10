@@ -39,19 +39,21 @@ const fileToBase64 = (file: File): Promise<string> => {
 interface FormField {
   id: string;
   name: string;
-  type: "text" | "textarea" | "checkbox" | "image";
+  type: "text" | "textarea" | "checkbox" | "image" | "button";
   x: number; // percentage from left (0 - 100)
   y: number; // percentage from top (0 - 100)
   w: number; // percentage of width (0 - 100)
   h: number; // percentage of height (0 - 100)
   page: number;
   align?: "left" | "right" | "center";
+  value?: string;
+  fontSize?: number;
 }
 
 export default function App() {
   // Application Modes
   const [docSource, setDocSource] = useState<"template" | "pdf" | "image">("template");
-  const [templateId, setTemplateId] = useState<"w9" | "sub">("w9");
+  const [templateId, setTemplateId] = useState<"w9" | "sub" | "hebrewSchool">("w9");
   
   // PDF state
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -121,28 +123,46 @@ export default function App() {
   // Set initial mock schema fields for templates
   useEffect(() => {
     if (docSource === "template") {
-      setPdfPoints({ width: 612, height: 792 });
       if (templateId === "w9") {
+        setPdfPoints({ width: 612, height: 792 });
         setFields([
-          { id: "1", name: "txtTaxpayerName", type: "text", x: 10, y: 14.5, w: 42, h: 2.8, page: 1 },
-          { id: "2", name: "txtBusinessName", type: "text", x: 10, y: 19.5, w: 42, h: 2.8, page: 1 },
+          { id: "1", name: "txtTaxpayerName", type: "text", x: 10, y: 14.5, w: 42, h: 2.8, page: 1, value: "Johnathan Smith", fontSize: 12 },
+          { id: "2", name: "txtBusinessName", type: "text", x: 10, y: 19.5, w: 42, h: 2.8, page: 1, value: "JS Contracting LLC", fontSize: 12 },
           { id: "3", name: "chkIndividualSole", type: "checkbox", x: 10.5, y: 24.8, w: 1.8, h: 1.4, page: 1 },
           { id: "4", name: "chkCCorporation", type: "checkbox", x: 23.5, y: 24.8, w: 1.8, h: 1.4, page: 1 },
           { id: "5", name: "chkSCorporation", type: "checkbox", x: 33.5, y: 24.8, w: 1.8, h: 1.4, page: 1 },
-          { id: "6", name: "txtAddressLine", type: "text", x: 10, y: 34.5, w: 42, h: 2.8, page: 1 },
-          { id: "7", name: "txtCityStateZip", type: "text", x: 10, y: 40.5, w: 42, h: 2.8, page: 1 },
-          { id: "8", name: "txtEmployerTin", type: "text", x: 58, y: 56.0, w: 32, h: 3.2, page: 1 },
-          { id: "9", name: "imgOwnerSignature", type: "image", x: 28, y: 73.5, w: 45, h: 4.5, page: 1 },
-          { id: "10", name: "txtSigningDate", type: "text", x: 78, y: 74.2, w: 12, h: 2.5, page: 1 }
+          { id: "6", name: "txtAddressLine", type: "text", x: 10, y: 34.5, w: 42, h: 2.8, page: 1, value: "123 Maple Street", fontSize: 12 },
+          { id: "7", name: "txtCityStateZip", type: "text", x: 10, y: 40.5, w: 42, h: 2.8, page: 1, value: "Austin, TX 78701", fontSize: 12 },
+          { id: "8", name: "txtEmployerTin", type: "text", x: 58, y: 56.0, w: 32, h: 3.2, page: 1, value: "12-3456789", fontSize: 12 },
+          { id: "9", name: "imgOwnerSignature", type: "button", x: 28, y: 73.5, w: 45, h: 4.5, page: 1, value: "Sign (Johnathan Smith)", fontSize: 12 },
+          { id: "10", name: "txtSigningDate", type: "text", x: 78, y: 74.2, w: 12, h: 2.5, page: 1, value: "06/10/2026", fontSize: 11 }
         ]);
       } else if (templateId === "sub") {
+        setPdfPoints({ width: 612, height: 792 });
         setFields([
-          { id: "21", name: "txtInvestorName", type: "text", x: 22, y: 18.2, w: 52, h: 2.8, page: 1 },
-          { id: "22", name: "txtInvestorEmail", type: "text", x: 22, y: 23.8, w: 52, h: 2.8, page: 1 },
+          { id: "21", name: "txtInvestorName", type: "text", x: 22, y: 18.2, w: 52, h: 2.8, page: 1, value: "Slate Capitals Inc", fontSize: 12 },
+          { id: "22", name: "txtInvestorEmail", type: "text", x: 22, y: 23.8, w: 52, h: 2.8, page: 1, value: "invest@slatecap.com", fontSize: 11 },
           { id: "23", name: "chkQualifiedInvestor", type: "checkbox", x: 15.5, y: 31.8, w: 2.0, h: 1.5, page: 1 },
-          { id: "24", name: "txtCommitmentAmount", type: "text", x: 35, y: 38.5, w: 38, h: 2.8, page: 1 },
-          { id: "25", name: "imgAuthorizedSignature", type: "image", x: 25, y: 52.0, w: 42, h: 4.8, page: 1 },
-          { id: "26", name: "txtSignatureDate", type: "text", x: 74, y: 53.0, w: 14, h: 2.5, page: 1 }
+          { id: "24", name: "txtCommitmentAmount", type: "text", x: 35, y: 38.5, w: 38, h: 2.8, page: 1, value: "500000", fontSize: 12 },
+          { id: "25", name: "imgAuthorizedSignature", type: "button", x: 25, y: 52.0, w: 42, h: 4.8, page: 1, value: "Authorize (Slate Signatory)", fontSize: 12 },
+          { id: "26", name: "txtSignatureDate", type: "text", x: 74, y: 53.0, w: 14, h: 2.5, page: 1, value: "06/10/2026", fontSize: 11 }
+        ]);
+      } else if (templateId === "hebrewSchool") {
+        setPdfPoints({ width: 595, height: 842 });
+        setFields([
+          { id: "h1", name: "txtTopDate", type: "text", x: 63.9, y: 49.3, w: 15.0, h: 1.6, page: 1, value: "10/06/2026", align: "right", fontSize: 12 },
+          { id: "h2", name: "txtSigneeName", type: "text", x: 55.9, y: 55.1, w: 14.6, h: 1.6, page: 1, value: "נטלי קויפמן", align: "right", fontSize: 12 },
+          { id: "h3", name: "txtSchoolName", type: "text", x: 41.8, y: 57.3, w: 16.6, h: 1.6, page: 1, value: "מיה סיידא", align: "right", fontSize: 12 },
+          { id: "h4", name: "txtChildName", type: "text", x: 65.0, y: 59.6, w: 13.3, h: 1.6, page: 1, value: "אופק פנקר", align: "right", fontSize: 12 },
+          { id: "h5", name: "txtChildID", type: "text", x: 17.0, y: 59.6, w: 13.3, h: 1.6, page: 1, value: "303682272", align: "right", fontSize: 12 },
+          { id: "h6", name: "chkGrades", type: "checkbox", x: 78.7, y: 67.1, w: 1.4, h: 1.3, page: 1 },
+          { id: "h7", name: "chkLearningDisabilities", type: "checkbox", x: 78.7, y: 68.5, w: 1.4, h: 1.3, page: 1 },
+          { id: "h8", name: "chkBehavioral", type: "checkbox", x: 78.7, y: 70.0, w: 1.4, h: 1.3, page: 1 },
+          { id: "h9", name: "txtParent1Name", type: "text", x: 52.3, y: 80.9, w: 24.0, h: 1.6, page: 1, value: "קויפמן נטלי", align: "right", fontSize: 12 },
+          { id: "h10", name: "txtParent1Address", type: "text", x: 26.0, y: 80.9, w: 15.4, h: 1.6, page: 1, value: "זמסקי מאיר 6 ראשל\"צ", align: "right", fontSize: 12 },
+          { id: "h11", name: "txtParent1Date", type: "text", x: 52.3, y: 83.1, w: 24.0, h: 1.6, page: 1, value: "10/06/2026", align: "right", fontSize: 12 },
+          { id: "h12", name: "Button_Signee", type: "button", x: 27.7, y: 87.4, w: 13.6, h: 2.0, page: 1, value: "נטלי קויפמן", align: "center", fontSize: 11 },
+          { id: "h13", name: "Button_School", type: "button", x: 27.1, y: 82.8, w: 13.6, h: 2.0, page: 1, value: "מיה סיידא", align: "center", fontSize: 11 },
         ]);
       }
       setSelectedFieldId(null);
@@ -325,7 +345,7 @@ export default function App() {
       ctx.fillStyle = "#64748B";
       ctx.fillText("Form W-9 (Simplified Visual Template for LLM Field Locator Training)", 30, 770);
 
-    } else {
+    } else if (templateId === "sub") {
       // Sub Agreement template
       ctx.fillStyle = "#1F2937";
       ctx.font = "bold 16px serif";
@@ -393,6 +413,119 @@ export default function App() {
       ctx.font = "italic 8px sans-serif";
       ctx.fillStyle = "#6B7280";
       ctx.fillText("Disclaimer: This tool detects correct points mappings dynamically using server-side Gemini API inference.", 40, 760);
+    } else if (templateId === "hebrewSchool") {
+      const width = 595;
+      const height = 842;
+      canvas.width = width;
+      canvas.height = height;
+
+      // Background Paper color
+      ctx.fillStyle = "#FAF9F6";
+      ctx.fillRect(0, 0, width, height);
+
+      // Simple paper outline
+      ctx.strokeStyle = "#E2E8F0";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0, 0, width, height);
+
+      // Draw Hebrew School Header
+      ctx.fillStyle = "#0F172A";
+      ctx.font = "bold 16px Arial, sans-serif";
+      ctx.fillText("טופס רישום והצהרת הורים לבית הספר", 160, 50);
+
+      ctx.font = "normal 8.5px Arial, sans-serif";
+      ctx.fillStyle = "#475569";
+      ctx.fillText("משרד החינוך והתרבות - עירית ראשון לציון", 220, 68);
+
+      ctx.beginPath();
+      ctx.moveTo(35, 80);
+      ctx.lineTo(560, 80);
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Draw Form Section labels
+      ctx.fillStyle = "#0F172A";
+      ctx.font = "bold 11px Arial, sans-serif";
+      ctx.fillText("פרטי ההצהרה ותאריכים מקומיים", 400, 115);
+
+      ctx.font = "normal 9px Arial, sans-serif";
+      ctx.fillText("תאריך עליון במערכת:", 430, 420);
+
+      ctx.font = "bold 11px Arial, sans-serif";
+      ctx.fillStyle = "#1E293B";
+      ctx.fillText("פרטי המצהיר ופרטי התלמיד", 420, 450);
+
+      ctx.font = "normal 9px Arial, sans-serif";
+      ctx.fillText("שם המצהיר / חותם:", 460, 475);
+      ctx.fillText("שם בית הספר / מוסד ומיה:", 430, 492);
+      ctx.fillText("שם הילד / הנרשם:", 460, 513);
+      ctx.fillText("תעודת זהות תלמיד:", 185, 513);
+
+      // Lines for fields
+      ctx.strokeStyle = "#CBD5E1";
+      ctx.beginPath();
+      ctx.moveTo(330, 475); ctx.lineTo(440, 475);
+      ctx.moveTo(240, 492); ctx.lineTo(410, 492);
+      ctx.moveTo(380, 513); ctx.lineTo(450, 513);
+      ctx.moveTo(100, 513); ctx.lineTo(170, 513);
+      ctx.stroke();
+
+      // Checkboxes Section wrapper
+      ctx.fillStyle = "#F8FAFC";
+      ctx.fillRect(40, 550, 515, 115);
+      ctx.strokeStyle = "#E2E8F0";
+      ctx.strokeRect(40, 550, 515, 115);
+
+      ctx.font = "bold 10px Arial, sans-serif";
+      ctx.fillStyle = "#1E293B";
+      ctx.fillText("קריטריונים לאישור והצהרות בריאותיות ולימודיות (סמן V בתיבות המעקב)", 220, 542);
+
+      const chkLabels = [
+        "אישור ציוני קורסים וציוני מעקב",
+        "הצהרת לקויות למידה מוסדרת",
+        "הצהרת בעיות התנהגות או משמעת"
+      ];
+
+      chkLabels.forEach((label, idx) => {
+        const y = 565 + idx * 12.5;
+        ctx.strokeStyle = "#475569";
+        ctx.strokeRect(468, y, 9, 9);
+        ctx.font = "normal 8.5px Arial, sans-serif";
+        ctx.fillStyle = "#334155";
+        ctx.fillText(label, 330, y + 8);
+      });
+
+      // Part II: Parents details
+      ctx.font = "bold 11px Arial, sans-serif";
+      ctx.fillStyle = "#1E293B";
+      ctx.fillText("פרטי הורים והצהרת אפוטרופוס", 410, 678);
+
+      ctx.font = "normal 9px Arial, sans-serif";
+      ctx.fillText("שם הורה 1:", 455, 693);
+      ctx.fillText("כתובת הורה 1:", 250, 693);
+      ctx.fillText("תאריך הורה 1:", 455, 712);
+
+      ctx.strokeStyle = "#CBD5E1";
+      ctx.beginPath();
+      ctx.moveTo(310, 693); ctx.lineTo(445, 693);
+      ctx.moveTo(150, 693); ctx.lineTo(245, 693);
+      ctx.moveTo(310, 712); ctx.lineTo(445, 712);
+      ctx.stroke();
+
+      // Bottom Signature Buttons description
+      ctx.fillStyle = "#F1F5F9";
+      ctx.fillRect(40, 745, 515, 60);
+      ctx.strokeStyle = "#CBD5E1";
+      ctx.strokeRect(40, 745, 515, 60);
+
+      ctx.font = "bold 9px Arial, sans-serif";
+      ctx.fillStyle = "#0F172A";
+      ctx.fillText("לחצני חתימה ואישור מסמכים דיגיטליים (Adobe XFA Buttons):", 240, 760);
+
+      ctx.font = "italic 8px Arial, sans-serif";
+      ctx.fillStyle = "#64748B";
+      ctx.fillText("הלחצנים מוגדרים במדויק בסכמת ה-XDP ומאפשרים למלא חתימה בנגיעה פיזית.", 235, 775);
     }
   };
 
@@ -546,7 +679,7 @@ export default function App() {
   };
 
   // Reset to default sample templates
-  const selectTemplate = (id: "w9" | "sub") => {
+  const selectTemplate = (id: "w9" | "sub" | "hebrewSchool") => {
     setDocSource("template");
     setTemplateId(id);
     setPdfFile(null);
@@ -876,7 +1009,9 @@ export default function App() {
       w: 25,
       h: 3,
       page: currentPage,
-      align: language === "rtl" ? "right" : "left"
+      align: language === "rtl" ? "right" : "left",
+      value: "",
+      fontSize: 12
     };
     setFields([...fields, newField]);
     setSelectedFieldId(newId);
@@ -1037,6 +1172,13 @@ export default function App() {
                 className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all ${docSource === "template" && templateId === "sub" ? "bg-slate-900 text-white shadow-xs" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
               >
                 Sample Sub Agreement
+              </button>
+              <button 
+                id="btn_source_hebrew"
+                onClick={() => selectTemplate("hebrewSchool")}
+                className={`py-1.5 px-3 rounded-lg text-xs font-semibold transition-all ${docSource === "template" && templateId === "hebrewSchool" ? "bg-slate-900 text-white shadow-xs" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
+              >
+                Sample Hebrew XDP Form
               </button>
               <button 
                 id="btn_trigger_upload"
@@ -1218,32 +1360,64 @@ export default function App() {
                     
                     // Box colors mapping per type
                     const colors = {
-                      text: { bg: "bg-blue-500/15", border: "border-blue-500", text: "text-blue-700" },
-                      textarea: { bg: "bg-indigo-500/15", border: "border-indigo-500", text: "text-indigo-700" },
-                      checkbox: { bg: "bg-emerald-500/15", border: "border-emerald-500", text: "text-emerald-700" },
-                      image: { bg: "bg-amber-500/15", border: "border-amber-500", text: "text-amber-700" }
+                      text: { bg: "bg-blue-500/10", border: "border-blue-500/80", text: "text-blue-800" },
+                      textarea: { bg: "bg-indigo-500/10", border: "border-indigo-500/80", text: "text-indigo-800" },
+                      checkbox: { bg: "bg-emerald-500/10", border: "border-emerald-500/80", text: "text-emerald-800" },
+                      image: { bg: "bg-amber-500/15", border: "border-amber-500/80", text: "text-amber-800" },
+                      button: { bg: "bg-slate-200", border: "border-slate-500", text: "text-slate-900" }
                     };
-                    const color = colors[f.type] || colors.text;
+                    const color = colors[f.type as keyof typeof colors] || colors.text;
+
+                    // Compute styles for signature/buttons and standard text alignments
+                    const isBtnStyle = f.type === "button" || f.type === "image";
+                    const isCheckbox = f.type === "checkbox";
+
+                    const visualStyle: React.CSSProperties = {
+                      left: `${f.x}%`,
+                      top: `${f.y}%`,
+                      width: `${f.w}%`,
+                      height: `${f.h}%`,
+                      ...(isBtnStyle ? {
+                        backgroundColor: "#d4d0c8",
+                        borderWidth: "2px",
+                        borderStyle: "solid",
+                        borderTopColor: "#ffffff",
+                        borderLeftColor: "#ffffff",
+                        borderBottomColor: "#404040",
+                        borderRightColor: "#404040",
+                      } : {})
+                    };
+
+                    const textAlignmentClass = isBtnStyle || f.align === "center"
+                      ? "justify-center text-center font-bold"
+                      : f.align === "right"
+                      ? "justify-end text-right"
+                      : "justify-start text-left";
 
                     return (
                       <div
                         id={`field_overlay_${f.id}`}
                         key={f.id}
-                        style={{
-                          left: `${f.x}%`,
-                          top: `${f.y}%`,
-                          width: `${f.w}%`,
-                          height: `${f.h}%`,
-                        }}
-                        className={`absolute border-2 ${color.bg} ${color.border} ${isSelected ? "ring-2 ring-blue-400 ring-offset-1 z-20" : "z-10"} group hover:shadow-md cursor-move flex items-center justify-center transition-shadow overflow-hidden rounded-sm ${cropModeActive ? "pointer-events-none" : ""}`}
+                        style={visualStyle}
+                        className={`absolute ${isBtnStyle ? "" : `border-2 ${color.bg} ${color.border}`} ${isSelected ? "ring-2 ring-blue-500 ring-offset-1 z-20" : "z-10"} group hover:shadow-md cursor-move flex items-center justify-center transition-shadow overflow-hidden rounded-sm ${cropModeActive ? "pointer-events-none" : ""}`}
                         onMouseDown={(e) => handleInteractionMouseDown(e, f, "drag")}
                       >
                         {/* Selected overlay item text label */}
-                        <div className="absolute top-0.5 left-1 max-w-[90%] truncate pointer-events-none">
-                          <span className={`text-[9px] font-bold ${color.text} font-mono bg-white/90 px-1 rounded shadow-2xs`}>
-                            {f.name}
-                          </span>
-                        </div>
+                        {!isCheckbox ? (
+                          <div 
+                            className={`w-full h-full flex items-center p-1 leading-none select-none font-sans truncate pointer-events-none ${textAlignmentClass}`}
+                            style={{
+                              fontSize: `${f.fontSize || 12}px`,
+                              color: isBtnStyle ? "#000000" : "#1e293b",
+                            }}
+                          >
+                            {f.value !== undefined && f.value !== "" ? f.value : f.name}
+                          </div>
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center font-black text-xs text-emerald-800 select-none animate-pulse">
+                            ✓
+                          </div>
+                        )}
 
                         {/* Top corner quick delete button */}
                         {isSelected && (
@@ -1488,15 +1662,15 @@ export default function App() {
                     {/* Field Type Radio Picker */}
                     <div className="flex flex-col gap-1.5">
                       <label className="font-medium text-slate-500">Field Type</label>
-                      <div className="grid grid-cols-4 gap-1 p-0.5 bg-slate-100 rounded-lg">
-                        {(["text", "textarea", "checkbox", "image"] as const).map(t => (
+                      <div className="grid grid-cols-5 gap-0.5 p-0.5 bg-slate-100 rounded-lg">
+                        {(["text", "textarea", "checkbox", "image", "button"] as const).map(t => (
                           <button
                             id={`radio_type_${t}_${field.id}`}
                             key={t}
                             onClick={() => updateFieldProperty(field.id, "type", t)}
-                            className={`py-1 rounded-md text-[10px] font-bold uppercase tracking-wide transition-all ${field.type === t ? "bg-white text-blue-600 shadow-2xs" : "text-slate-500 hover:text-slate-800"}`}
+                            className={`py-1 rounded-md text-[9px] font-bold uppercase tracking-wide transition-all ${field.type === t ? "bg-white text-blue-600 shadow-2xs" : "text-slate-500 hover:text-slate-800"}`}
                           >
-                            {t === "image" ? "Sign/Img" : t}
+                            {t === "image" ? "Sign" : t}
                           </button>
                         ))}
                       </div>
@@ -1514,8 +1688,43 @@ export default function App() {
                       />
                     </div>
 
+                    {/* Field Value/Pre-filled text Input */}
+                    {field.type !== "checkbox" && (
+                      <div className="flex flex-col gap-1.5">
+                        <label htmlFor="inspector-field-value" className="font-medium text-slate-500">Field Value (Display Text)</label>
+                        <input
+                          id="inspector-field-value"
+                          type="text"
+                          value={field.value || ""}
+                          placeholder={field.name}
+                          onChange={(e) => updateFieldProperty(field.id, "value", e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 p-2 rounded-lg text-slate-800 font-sans focus:border-blue-400 focus:ring-1 focus:ring-blue-400 outline-hidden font-medium"
+                        />
+                      </div>
+                    )}
+
+                    {/* Font Size Selector (Only for non-checkboxes) */}
+                    {field.type !== "checkbox" && (
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex justify-between items-center">
+                          <label htmlFor="inspector-font-size" className="font-medium text-slate-500">Font Size</label>
+                          <span className="font-mono text-xs text-blue-600 font-bold">{field.fontSize || 12}px</span>
+                        </div>
+                        <input
+                          id="inspector-font-size"
+                          type="range"
+                          min="8"
+                          max="28"
+                          step="1"
+                          value={field.fontSize || 12}
+                          onChange={(e) => updateFieldProperty(field.id, "fontSize", parseInt(e.target.value))}
+                          className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                        />
+                      </div>
+                    )}
+
                     {/* Align Text Option (Only applicable for typing/multiline fields) */}
-                    {(field.type === "text" || field.type === "textarea") && (
+                    {(field.type === "text" || field.type === "textarea" || field.type === "button" || field.type === "image") && (
                       <div className="flex flex-col gap-1.5">
                         <label className="font-medium text-slate-500">Align Text</label>
                         <div className="grid grid-cols-3 gap-1 p-0.5 bg-slate-100 rounded-lg">
