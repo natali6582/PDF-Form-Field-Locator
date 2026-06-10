@@ -203,7 +203,7 @@ Classify field types strictly into: 'text', 'checkbox', 'signature', 'date', 'im
 app.post("/api/bake-pdf", async (req, res) => {
   try {
     const { pdfBase64, imgBase64, fields, language, templateId } = req.body;
-    const { PDFDocument, TextAlignment, rgb, StandardFonts } = await import("pdf-lib");
+    const { PDFDocument, TextAlignment, rgb, StandardFonts, PDFName } = await import("pdf-lib");
     
     let pdfDoc: any;
     
@@ -358,7 +358,21 @@ app.post("/api/bake-pdf", async (req, res) => {
               y: yPos,
               width: wBounds,
               height: hBounds,
+              borderWidth: 0,
             });
+
+            // Set explicit transparent background & border [] to satisfy all PDF renders safely
+            try {
+              const widgets = checkBox.acroField.getWidgets();
+              for (const widget of widgets) {
+                const ac = widget.getOrCreateAppearanceCharacteristics();
+                ac.dict.set(PDFName.of('BG'), ac.dict.context.obj([]));
+                ac.dict.set(PDFName.of('BC'), ac.dict.context.obj([]));
+              }
+            } catch (acErr) {
+              console.warn(`Failed to set transparent characteristics for checkbox ${uniqueName}:`, acErr);
+            }
+
             try {
               checkBox.updateAppearances();
             } catch (appErr) {
@@ -389,70 +403,29 @@ app.post("/api/bake-pdf", async (req, res) => {
               }
             }
 
-            // Draw high-fidelity bevel physical outline as requested
-            try {
-              pdfPage.drawRectangle({
-                x: xPos,
-                y: yPos,
-                width: wBounds,
-                height: hBounds,
-                color: rgb(212 / 255, 208 / 255, 200 / 255),
-              });
-
-              // Bevel edges
-              pdfPage.drawLine({
-                start: { x: xPos, y: yPos },
-                end: { x: xPos, y: yPos + hBounds },
-                thickness: 1.5,
-                color: rgb(1, 1, 1),
-              });
-              pdfPage.drawLine({
-                start: { x: xPos, y: yPos + hBounds },
-                end: { x: xPos + wBounds, y: yPos + hBounds },
-                thickness: 1.5,
-                color: rgb(1, 1, 1),
-              });
-              pdfPage.drawLine({
-                start: { x: xPos, y: yPos },
-                end: { x: xPos + wBounds, y: yPos },
-                thickness: 1.5,
-                color: rgb(0.25, 0.25, 0.25),
-              });
-              pdfPage.drawLine({
-                start: { x: xPos + wBounds, y: yPos },
-                end: { x: xPos + wBounds, y: yPos + hBounds },
-                thickness: 1.5,
-                color: rgb(0.25, 0.25, 0.25),
-              });
-
-              const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-              const drawSize = f.fontSize || 10;
-              const textWidth = boldFont.widthOfTextAtSize(labelText, drawSize);
-              const textHeight = boldFont.heightAtSize(drawSize);
-
-              const drawX = xPos + (wBounds - textWidth) / 2;
-              const drawY = yPos + (hBounds - textHeight) / 2 + 1;
-
-              pdfPage.drawText(labelText, {
-                x: drawX,
-                y: drawY,
-                size: drawSize,
-                font: boldFont,
-                color: rgb(0, 0, 0),
-              });
-            } catch (drawErr) {
-              console.warn("Could not draw visual raised button decoration:", drawErr);
-            }
-
+            // Set interactive button on top of page
             buttonField.addToPage(labelText, pdfPage, {
               x: xPos,
               y: yPos,
               width: wBounds,
               height: hBounds,
+              borderWidth: 0,
             });
 
+            // Set transparent appearance characteristics to avoid covering existing text
             try {
-              buttonField.updateAppearances(font);
+              const widgets = buttonField.acroField.getWidgets();
+              for (const widget of widgets) {
+                const ac = widget.getOrCreateAppearanceCharacteristics();
+                ac.dict.set(PDFName.of('BG'), ac.dict.context.obj([]));
+                ac.dict.set(PDFName.of('BC'), ac.dict.context.obj([]));
+              }
+            } catch (acErr) {
+              console.warn(`Failed to set transparent characteristics for button ${uniqueName}:`, acErr);
+            }
+
+            try {
+              buttonField.updateAppearances();
             } catch (appErr) {
               console.warn(`Could not update button appearances for ${uniqueName}:`, appErr);
             }
@@ -500,7 +473,20 @@ app.post("/api/bake-pdf", async (req, res) => {
               y: yPos,
               width: wBounds,
               height: hBounds,
+              borderWidth: 0,
             });
+
+            // Make textfield perfectly transparent without Safari opaque white/black fallback box
+            try {
+              const widgets = textField.acroField.getWidgets();
+              for (const widget of widgets) {
+                const ac = widget.getOrCreateAppearanceCharacteristics();
+                ac.dict.set(PDFName.of('BG'), ac.dict.context.obj([]));
+                ac.dict.set(PDFName.of('BC'), ac.dict.context.obj([]));
+              }
+            } catch (acErr) {
+              console.warn(`Failed to set transparent characteristics for textfield ${uniqueName}:`, acErr);
+            }
           }
         } catch (fieldErr: any) {
           // Robust error catching and logs
