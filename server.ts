@@ -169,7 +169,7 @@ Use clear prefix conventions: 'txt' (text, textarea), 'chk' (checkbox), 'img' (s
 app.post("/api/bake-pdf", async (req, res) => {
   try {
     const { pdfBase64, imgBase64, fields, language, templateId } = req.body;
-    const { PDFDocument, TextAlignment, rgb } = await import("pdf-lib");
+    const { PDFDocument, TextAlignment, rgb, StandardFonts } = await import("pdf-lib");
     
     let pdfDoc: any;
     
@@ -310,15 +310,107 @@ app.post("/api/bake-pdf", async (req, res) => {
               width: wBounds,
               height: hBounds,
             });
+            try {
+              checkBox.updateAppearances();
+            } catch (appErr) {
+              console.warn(`Failed to update checkbox appearance for ${uniqueName}:`, appErr);
+            }
           } else if (f.type === "button") {
             const buttonField = form.createButton(uniqueName);
-            buttonField.setLabel(f.value || f.name);
+            
+            // If the label contains non-ASCII characters (e.g., Hebrew), standard Helvetica will crash.
+            // We map common Hebrew labels to clean, functional English equivalents for the PDF stream.
+            let labelText = f.value || f.name;
+            const hasNonAscii = /[^\x00-\x7F]/.test(labelText);
+            if (hasNonAscii) {
+              const lowerCheck = labelText.toLowerCase();
+              if (lowerCheck.includes("sign") || lowerCheck.includes("signature") || lowerCheck.includes("חתימה") || lowerCheck.includes("חתום")) {
+                labelText = "Signature";
+              } else if (lowerCheck.includes("date") || lowerCheck.includes("תאריך") || lowerCheck.includes("יום")) {
+                labelText = "Date / Stamp";
+              } else if (lowerCheck.includes("approve") || lowerCheck.includes("אישור") || lowerCheck.includes("כן")) {
+                labelText = "Approve";
+              } else {
+                labelText = "Click to Sign";
+              }
+            }
+
+            // Draw a high-fidelity visual bevel button on the physical PDF page under the interactive field coordinates.
+            // Matches: <border><edge stroke="raised"/><fill><color value="212,208,200"/></fill></border>
+            // Style matches gray value RGB (212, 208, 200) -> 0.83, 0.82, 0.78
+            try {
+              pdfPage.drawRectangle({
+                x: xPos,
+                y: yPos,
+                width: wBounds,
+                height: hBounds,
+                color: rgb(212 / 255, 208 / 255, 200 / 255),
+              });
+
+              // Left edge (white highlighting for raised border)
+              pdfPage.drawLine({
+                start: { x: xPos, y: yPos },
+                end: { x: xPos, y: yPos + hBounds },
+                thickness: 1.5,
+                color: rgb(1, 1, 1),
+              });
+              // Top edge (white highlighting for raised border)
+              pdfPage.drawLine({
+                start: { x: xPos, y: yPos + hBounds },
+                end: { x: xPos + wBounds, y: yPos + hBounds },
+                thickness: 1.5,
+                color: rgb(1, 1, 1),
+              });
+              // Bottom edge (dark grey shading for raised highlight)
+              pdfPage.drawLine({
+                start: { x: xPos, y: yPos },
+                end: { x: xPos + wBounds, y: yPos },
+                thickness: 1.5,
+                color: rgb(0.25, 0.25, 0.25),
+              });
+              // Right edge (dark grey shading for raised highlight)
+              pdfPage.drawLine({
+                start: { x: xPos + wBounds, y: yPos },
+                end: { x: xPos + wBounds, y: yPos + hBounds },
+                thickness: 1.5,
+                color: rgb(0.25, 0.25, 0.25),
+              });
+
+              // Embed standard bold font to measure and center label perfectly
+              const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+              const drawSize = f.fontSize || 10;
+              const textWidth = boldFont.widthOfTextAtSize(labelText, drawSize);
+              const textHeight = boldFont.heightAtSize(drawSize);
+
+              // Center text inside button bounds horizontally and vertically: Matches caption alignment <para vAlign="middle" hAlign="center"/>
+              const drawX = xPos + (wBounds - textWidth) / 2;
+              const drawY = yPos + (hBounds - textHeight) / 2 + 1; // Minor offset correction for vertical visual alignment
+
+              pdfPage.drawText(labelText, {
+                x: drawX,
+                y: drawY,
+                size: drawSize,
+                font: boldFont,
+                color: rgb(0, 0, 0),
+              });
+            } catch (drawErr) {
+              console.warn("Could not draw visual raised button decoration:", drawErr);
+            }
+
+            buttonField.setLabel(labelText);
             buttonField.addToPage(pdfPage, {
               x: xPos,
               y: yPos,
               width: wBounds,
               height: hBounds,
             });
+
+            // Force rendering appearance streams for PDF reader visibility support
+            try {
+              buttonField.updateAppearances();
+            } catch (appErr) {
+              console.warn(`Could not update button appearances for ${uniqueName}:`, appErr);
+            }
           } else {
             // text, textarea, or image signature placeholders
             const textField = form.createTextField(uniqueName);
@@ -326,8 +418,8 @@ app.post("/api/bake-pdf", async (req, res) => {
               textField.enableMultiline();
             }
             
-            // Text alignment support based on field property, with overall language/RTL fallback
-            const fieldAlign = f.type === "image" ? "center" : (f.align || (isRtl ? "right" : "left"));
+            // Text alignment support based on field property, defaulting to center as requested by the user
+            const fieldAlign = f.type === "image" ? "center" : (f.align || "center");
             if (fieldAlign === "right") {
               textField.setAlignment(TextAlignment.Right);
             } else if (fieldAlign === "center") {

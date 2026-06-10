@@ -150,17 +150,17 @@ export default function App() {
       } else if (templateId === "hebrewSchool") {
         setPdfPoints({ width: 595, height: 842 });
         setFields([
-          { id: "h1", name: "txtTopDate", type: "text", x: 63.9, y: 49.3, w: 15.0, h: 1.6, page: 1, value: "10/06/2026", align: "right", fontSize: 12 },
-          { id: "h2", name: "txtSigneeName", type: "text", x: 55.9, y: 55.1, w: 14.6, h: 1.6, page: 1, value: "נטלי קויפמן", align: "right", fontSize: 12 },
-          { id: "h3", name: "txtSchoolName", type: "text", x: 41.8, y: 57.3, w: 16.6, h: 1.6, page: 1, value: "מיה סיידא", align: "right", fontSize: 12 },
-          { id: "h4", name: "txtChildName", type: "text", x: 65.0, y: 59.6, w: 13.3, h: 1.6, page: 1, value: "אופק פנקר", align: "right", fontSize: 12 },
-          { id: "h5", name: "txtChildID", type: "text", x: 17.0, y: 59.6, w: 13.3, h: 1.6, page: 1, value: "303682272", align: "right", fontSize: 12 },
+          { id: "h1", name: "txtTopDate", type: "text", x: 63.9, y: 49.3, w: 15.0, h: 1.6, page: 1, value: "10/06/2026", align: "center", fontSize: 12 },
+          { id: "h2", name: "txtSigneeName", type: "text", x: 55.9, y: 55.1, w: 14.6, h: 1.6, page: 1, value: "נטלי קויפמן", align: "center", fontSize: 12 },
+          { id: "h3", name: "txtSchoolName", type: "text", x: 41.8, y: 57.3, w: 16.6, h: 1.6, page: 1, value: "מיה סיידא", align: "center", fontSize: 12 },
+          { id: "h4", name: "txtChildName", type: "text", x: 65.0, y: 59.6, w: 13.3, h: 1.6, page: 1, value: "אופק פנקר", align: "center", fontSize: 12 },
+          { id: "h5", name: "txtChildID", type: "text", x: 17.0, y: 59.6, w: 13.3, h: 1.6, page: 1, value: "303682272", align: "center", fontSize: 12 },
           { id: "h6", name: "chkGrades", type: "checkbox", x: 78.7, y: 67.1, w: 1.4, h: 1.3, page: 1 },
           { id: "h7", name: "chkLearningDisabilities", type: "checkbox", x: 78.7, y: 68.5, w: 1.4, h: 1.3, page: 1 },
           { id: "h8", name: "chkBehavioral", type: "checkbox", x: 78.7, y: 70.0, w: 1.4, h: 1.3, page: 1 },
-          { id: "h9", name: "txtParent1Name", type: "text", x: 52.3, y: 80.9, w: 24.0, h: 1.6, page: 1, value: "קויפמן נטלי", align: "right", fontSize: 12 },
-          { id: "h10", name: "txtParent1Address", type: "text", x: 26.0, y: 80.9, w: 15.4, h: 1.6, page: 1, value: "זמסקי מאיר 6 ראשל\"צ", align: "right", fontSize: 12 },
-          { id: "h11", name: "txtParent1Date", type: "text", x: 52.3, y: 83.1, w: 24.0, h: 1.6, page: 1, value: "10/06/2026", align: "right", fontSize: 12 },
+          { id: "h9", name: "txtParent1Name", type: "text", x: 52.3, y: 80.9, w: 24.0, h: 1.6, page: 1, value: "קויפמן נטלי", align: "center", fontSize: 12 },
+          { id: "h10", name: "txtParent1Address", type: "text", x: 26.0, y: 80.9, w: 15.4, h: 1.6, page: 1, value: "זמסקי מאיר 6 ראשל\"צ", align: "center", fontSize: 12 },
+          { id: "h11", name: "txtParent1Date", type: "text", x: 52.3, y: 83.1, w: 24.0, h: 1.6, page: 1, value: "10/06/2026", align: "center", fontSize: 12 },
           { id: "h12", name: "Button_Signee", type: "button", x: 27.7, y: 87.4, w: 13.6, h: 2.0, page: 1, value: "נטלי קויפמן", align: "center", fontSize: 11 },
           { id: "h13", name: "Button_School", type: "button", x: 27.1, y: 82.8, w: 13.6, h: 2.0, page: 1, value: "מיה סיידא", align: "center", fontSize: 11 },
         ]);
@@ -174,7 +174,7 @@ export default function App() {
     setFields((prev) =>
       prev.map((f) => ({
         ...f,
-        align: f.align || (language === "rtl" ? "right" : "left"),
+        align: f.align || "center",
       }))
     );
   }, [language]);
@@ -1009,7 +1009,7 @@ export default function App() {
       w: 25,
       h: 3,
       page: currentPage,
-      align: language === "rtl" ? "right" : "left",
+      align: "center",
       value: "",
       fontSize: 12
     };
@@ -1405,13 +1405,25 @@ export default function App() {
                         {/* Selected overlay item text label */}
                         {!isCheckbox ? (
                           <div 
-                            className={`w-full h-full flex items-center p-1 leading-none select-none font-sans truncate pointer-events-none ${textAlignmentClass}`}
-                            style={{
-                              fontSize: `${f.fontSize || 12}px`,
-                              color: isBtnStyle ? "#000000" : "#1e293b",
-                            }}
+                            className="w-full h-full flex items-center justify-center px-1.5 py-0.5"
                           >
-                            {f.value !== undefined && f.value !== "" ? f.value : f.name}
+                            <span 
+                              className={`block w-full truncate font-sans select-none pointer-events-none leading-normal ${
+                                isBtnStyle || f.align === "center"
+                                  ? "text-center font-bold"
+                                  : f.align === "right"
+                                  ? "text-right font-medium"
+                                  : f.align === "left"
+                                  ? "text-left font-medium"
+                                  : "text-center font-medium"
+                              }`}
+                              style={{
+                                fontSize: `${f.fontSize || 12}px`,
+                                color: isBtnStyle ? "#000000" : "#1e293b",
+                              }}
+                            >
+                              {f.value !== undefined && f.value !== "" ? f.value : f.name}
+                            </span>
                           </div>
                         ) : (
                           <div className="w-full h-full flex items-center justify-center font-black text-xs text-emerald-800 select-none animate-pulse">
