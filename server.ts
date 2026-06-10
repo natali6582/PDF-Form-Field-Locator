@@ -452,7 +452,7 @@ app.post("/api/bake-pdf", async (req, res) => {
             });
 
             try {
-              buttonField.updateAppearances();
+              buttonField.updateAppearances(font);
             } catch (appErr) {
               console.warn(`Could not update button appearances for ${uniqueName}:`, appErr);
             }
