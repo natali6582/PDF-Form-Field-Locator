@@ -55,27 +55,37 @@ app.post("/api/detect-fields", async (req, res) => {
     // Strip header if any (e.g. "data:image/png;base64,")
     const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
 
-    const pagWidth = pageDimensions?.width || 595;
-    const pagHeight = pageDimensions?.height || 842;
+    const pagWidth = 100;
+    const pagHeight = 100;
 
-    const prompt = `Analyze this page image of a form (Page ${pageNum || 1}) and detect all input areas, blanks, boxes, checkboxes, or signature fields.
-The target page dimensions are exactly ${pagWidth} wide x ${pagHeight} high points.
+    const prompt = `Analyze this page image of a form (Page ${pageNum || 1}) and detect all fillable fields (blanks, dotted lines, underline input zones, checkboxes, signature areas, or date/dropdown boxes).
+We will use normalized PERCENTAGE coordinates from 0.0 to 100.0 relative to the image boundaries, where (0,0) is the absolute top-left corner of the page and (100,100) is the absolute bottom-right corner of the page.
+
 For each detected field, provide:
 1. "name": A unique, camelCase suggested field name prefixed with 'txt' for text (e.g., txtFullName), 'chk' for checkboxes (e.g., chkAgreed), 'img' for signature fields (e.g., imgSignature), or 'dt' for dates (e.g., dtBirth).
 2. "type": One of: 'text', 'checkbox', 'signature', 'date', 'image', or 'dropdown'. Choose the best fitting classification.
 3. "page": The page number, which is ${pageNum || 1}.
-4. "x": Absolute horizontal offset in PDF points from the left-most corner (0 to ${pagWidth}).
-5. "y": Absolute vertical offset in PDF points from the top-most edge (0 to ${pagHeight}).
-6. "width": Absolute width of the field in PDF points (1 to ${pagWidth}).
-7. "height": Absolute height of the field in PDF points (1 to ${pagHeight}).
-8. "label": The literal printed/scanned text label detected nearby or associated with the field (e.g., "Full Name:", "Email Address:", "I agree bounds", "Date:").
+4. "x": Horizontal offset of the left edge of the input area as a percentage of the page width (0.0 to 100.0).
+5. "y": Vertical offset of the top edge of the input area as a percentage of the page height (0.0 to 100.0).
+6. "width": Width of the input area as a percentage of the page width (0.5 to 100.0).
+7. "height": Height of the input area as a percentage of the page height (0.5 to 100.0).
+8. "label": The literal printed/scanned text label detected nearby or associated with the field (e.g., "Full Name:", "Email Address:", "Date:").
 9. "confidence": A decimal confidence score between 0.0 and 1.0.
-10. "reasoning": A brief explanation of why this bounding area was located (e.g., "Found labeled box next to 'Full Name' of size 140x20").
+10. "reasoning": A brief explanation of why this bounding area was located.
+
+CRITICAL POSITIONING AND ALIGNMENT RULES FOR HIGH PRECISION:
+- DO NOT COVER OR OVERLAP THE PRINTED TEXT LABELS (such as "שם המשקיע:", "על-ידי:", "תפקיד:", "תאריך:", or the checkbox/label characters) with the input bounding boxes! The input fields must be placed completely clear of any printed background characters. They should reside entirely on the blank space, underline, or empty spaces meant for fillable input.
+- For Right-to-Left (RTL / Hebrew) forms, the printed label text (e.g., "שם המשקיע:") is on the RIGHT, and the blank space or underline is situated to the LEFT of that label characters. The bounding box ('x', 'y', 'width', 'height') must be positioned ON the underline to the LEFT of the label text, leaving a comfortable gap so that the label text is fully uncovered and visible.
+- For Left-to-Right (LTR) forms, the text label is on the LEFT, and the blank underline is to the RIGHT. Place the field box strictly on the blank line to the right of the text label.
+- Text and date fields MUST be placed EXACTLY on top of the horizontal underlines/guidelines where a human would write. Align the bottom edge of the field perfectly with the line so text typed in the field doesn't overlap or hang above/below the line.
+- Do not make the input areas too tall. The height of a normal text input line should be about 1.5% to 2.5% of the page height. No thick overlapping blocks.
+- Checkboxes should align horizontally in line with their associated text, should be square in shape (usually 1.5% to 2.2% wide and high), and should sit exactly on top of the printed checkbox outline, or right next to the corresponding checklist label text without overlapping it.
+- Ensure fields do not collide, overlap, or obscure each other or any other printed instructions. Only cover active blank lines or whitespace inputs.
 
 Return the structure matching the provided JSON schema. Ensure fields are properly separated and don't collide.`;
 
-    const systemInstruction = `You are an incredibly precise layout OCR and design intelligence agent. Your task is to detect blank PDF form fields on page images and output their precise coordinates in PDF points.
-The current page dimensions are ${pagWidth} x ${pagHeight} points.
+    const systemInstruction = `You are an incredibly precise layout OCR and design intelligence agent. Your task is to detect blank PDF form fields on page images and output their precise coordinates as normalized percentages (0.0 to 100.0) of the page width and height.
+Top-left corner is (0,0), and bottom-right corner is (100,100).
 Classify field types strictly into: 'text', 'checkbox', 'signature', 'date', 'image', or 'dropdown'.`;
 
     const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
@@ -105,7 +115,7 @@ Classify field types strictly into: 'text', 'checkbox', 'signature', 'date', 'im
               properties: {
                 fields: {
                   type: Type.ARRAY,
-                  description: "A list of identified blank fields on the form page with absolute point coordinates.",
+                  description: "A list of identified blank fields on the form page with percentage coordinates relative to the page boundaries (0.0 to 100.0).",
                   items: {
                     type: Type.OBJECT,
                     properties: {
@@ -123,19 +133,19 @@ Classify field types strictly into: 'text', 'checkbox', 'signature', 'date', 'im
                       },
                       x: {
                         type: Type.NUMBER,
-                        description: `Absolute X coordinate top-left corner in PDF points (0 to ${pagWidth})`,
+                        description: `Horizontal offset of the left edge as a percentage of the page width (0.0 to 100.0)`,
                       },
                       y: {
                         type: Type.NUMBER,
-                        description: `Absolute Y coordinate top-left corner in PDF points (0 to ${pagHeight})`,
+                        description: `Vertical offset of the top edge as a percentage of the page height (0.0 to 100.0)`,
                       },
                       width: {
                         type: Type.NUMBER,
-                        description: "Width of field in PDF points",
+                        description: "Width as a percentage of the page width (0.5 to 100.0)",
                       },
                       height: {
                         type: Type.NUMBER,
-                        description: "Height of field in PDF points",
+                        description: "Height as a percentage of the page height (0.5 to 100.0)",
                       },
                       label: {
                         type: Type.STRING,
@@ -155,7 +165,7 @@ Classify field types strictly into: 'text', 'checkbox', 'signature', 'date', 'im
                 },
                 page_dimensions: {
                   type: Type.OBJECT,
-                  description: "The point dimensions of the form page",
+                  description: "The percentage dimensions of the form page (always 100 x 100)",
                   properties: {
                     width: { type: Type.NUMBER },
                     height: { type: Type.NUMBER }
@@ -192,6 +202,12 @@ Classify field types strictly into: 'text', 'checkbox', 'signature', 'date', 'im
     }
 
     const result = JSON.parse(responseText.trim());
+    if (!result.page_dimensions) {
+      result.page_dimensions = { width: 100, height: 100 };
+    } else {
+      result.page_dimensions.width = 100;
+      result.page_dimensions.height = 100;
+    }
     res.json(result);
   } catch (error: any) {
     console.error("Gemini detection error:", error);

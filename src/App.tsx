@@ -107,6 +107,7 @@ export default function App() {
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [zoomScale, setZoomScale] = useState<number>(1.0);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [analysisStatusMessage, setAnalysisStatusMessage] = useState<string>("Gemini is analyzing page layout visually");
   const [isCopied, setIsCopied] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [serverConnected, setServerConnected] = useState<boolean>(true);
@@ -1094,112 +1095,229 @@ export default function App() {
 
   // Auto detect fields with Gemini API (Visual multimodal)
   const autoDetectFieldsWithLLM = async () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
     setIsAnalyzing(true);
     setErrorMessage(null);
+    setAnalysisStatusMessage("Preparing document for layout analysis...");
 
     try {
-      // Capture the current rendered canvas screen buffer as base64 to send to Gemini
-      let imageBase64 = canvas.toDataURL("image/png");
+      let finalFieldsToSet: FormField[] = [];
 
-      if (cropRect) {
-        // Slices off a precise bounding area of the document and sets it as active focus
-        const tempCanvas = document.createElement("canvas");
-        const tempCtx = tempCanvas.getContext("2d");
-        if (tempCtx) {
-          const cropX = (cropRect.x / 100) * canvas.width;
-          const cropY = (cropRect.y / 100) * canvas.height;
-          const cropW = (cropRect.w / 100) * canvas.width;
-          const cropH = (cropRect.h / 100) * canvas.height;
+      // If we have a multi-page PDF loaded, run on ALL pages sequentially
+      if (docSource === "pdf" && pdfFile) {
+        const pdfjsLib = await loadPdfJs();
+        const fileReader = new FileReader();
+        
+        const arrayBuffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+          fileReader.onload = (e) => resolve(e.target?.result as ArrayBuffer);
+          fileReader.onerror = (err) => reject(new Error("Failed to read PDF file binary."));
+          fileReader.readAsArrayBuffer(pdfFile);
+        });
 
-          // Prevent 0 width/height errors
-          if (cropW > 1 && cropH > 1) {
-            tempCanvas.width = cropW;
-            tempCanvas.height = cropH;
-            tempCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-            imageBase64 = tempCanvas.toDataURL("image/png");
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const pdfDocument = await loadingTask.promise;
+        const totalPages = pdfDocument.numPages;
+
+        setAnalysisStatusMessage(`Found ${totalPages} pages. Initiating Gemini analysis...`);
+
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+          setAnalysisStatusMessage(`Capturing and analyzing page ${pageNum} of ${totalPages}...`);
+          
+          // Render page to offscreen canvas
+          const pageInstance = await pdfDocument.getPage(pageNum);
+          const viewport = pageInstance.getViewport({ scale: 1.0 });
+          
+          const pageW = viewport.width || 595;
+          const pageH = viewport.height || 842;
+          
+          // Standard high-resolution render scale for visual analysis
+          const outputWidth = 612;
+          const scaleFactor = outputWidth / pageW;
+          const scaledViewport = pageInstance.getViewport({ scale: scaleFactor });
+          
+          const tempCanvas = document.createElement("canvas");
+          tempCanvas.width = scaledViewport.width;
+          tempCanvas.height = scaledViewport.height;
+          
+          const tempCtx = tempCanvas.getContext("2d");
+          if (!tempCtx) {
+            throw new Error(`Could not initialize canvas context for page ${pageNum}`);
           }
+          
+          await pageInstance.render({
+            canvasContext: tempCtx,
+            viewport: scaledViewport
+          }).promise;
+          
+          const imageBase64 = tempCanvas.toDataURL("image/png");
+
+          setAnalysisStatusMessage(`Running layout intelligence on page ${pageNum} of ${totalPages}...`);
+
+          const response = await fetch("/api/detect-fields", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              image: imageBase64,
+              pageNum: pageNum,
+              pageDimensions: { width: pageW, height: pageH }
+            })
+          });
+
+          const data = await response.json();
+          if (data.error) {
+            throw new Error(`Page ${pageNum} analysis error: ${data.error}`);
+          }
+
+          if (data.fields && Array.isArray(data.fields)) {
+            // Since backend handles percentage coordinates internally under 100x100 bounds, use 100 as default
+            const mapWidth = data.page_dimensions?.width || 100;
+            const mapHeight = data.page_dimensions?.height || 100;
+
+            const fieldsForPage: FormField[] = data.fields.map((f: any, idx: number) => {
+              let fx = (f.x / mapWidth) * 100;
+              let fy = (f.y / mapHeight) * 100;
+              let fw = (f.width / mapWidth) * 100;
+              let fh = (f.height / mapHeight) * 100;
+
+              let mappedType: "text" | "textarea" | "checkbox" | "image" | "button" = "text";
+              const lowerType = (f.type || "text").toLowerCase();
+              if (lowerType === "checkbox") {
+                mappedType = "checkbox";
+              } else if (lowerType === "signature" || lowerType === "image") {
+                mappedType = "image";
+              } else if (lowerType === "button") {
+                mappedType = "button";
+              } else if (lowerType === "textarea") {
+                mappedType = "textarea";
+              } else {
+                mappedType = "text";
+              }
+
+              return {
+                id: `gemini-${Date.now()}-p${pageNum}-${idx}`,
+                name: f.name || `txtField_p${pageNum}_${idx + 1}`,
+                type: mappedType,
+                x: Number(Math.max(0, Math.min(100, fx)).toFixed(2)),
+                y: Number(Math.max(0, Math.min(100, fy)).toFixed(2)),
+                w: Number(Math.max(0.5, Math.min(100, fw)).toFixed(2)),
+                h: Number(Math.max(0.5, Math.min(100, fh)).toFixed(2)),
+                page: pageNum,
+                align: language === "rtl" ? "right" : "left",
+                label: f.label || "",
+                confidence: f.confidence || 1.0,
+                reasoning: f.reasoning || ""
+              };
+            });
+
+            finalFieldsToSet = [...finalFieldsToSet, ...fieldsForPage];
+          }
+        }
+      } else {
+        // Fallback for visual canvas layout (single scanned image or custom local template)
+        const canvas = canvasRef.current;
+        if (!canvas) {
+          throw new Error("Active document canvas not rendered yet.");
+        }
+
+        setAnalysisStatusMessage("Analyzing current canvas layout...");
+
+        let imageBase64 = canvas.toDataURL("image/png");
+
+        if (cropRect) {
+          const tempCanvas = document.createElement("canvas");
+          const tempCtx = tempCanvas.getContext("2d");
+          if (tempCtx) {
+            const cropX = (cropRect.x / 100) * canvas.width;
+            const cropY = (cropRect.y / 100) * canvas.height;
+            const cropW = (cropRect.w / 100) * canvas.width;
+            const cropH = (cropRect.h / 100) * canvas.height;
+
+            if (cropW > 1 && cropH > 1) {
+              tempCanvas.width = cropW;
+              tempCanvas.height = cropH;
+              tempCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+              imageBase64 = tempCanvas.toDataURL("image/png");
+            }
+          }
+        }
+
+        const response = await fetch("/api/detect-fields", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            image: imageBase64,
+            pageNum: currentPage,
+            pageDimensions: pdfPoints
+          })
+        });
+
+        const data = await response.json();
+        if (data.error) {
+          throw new Error(data.error);
+        }
+
+        if (data.fields && Array.isArray(data.fields)) {
+          const mapWidth = data.page_dimensions?.width || 100;
+          const mapHeight = data.page_dimensions?.height || 100;
+
+          finalFieldsToSet = data.fields.map((f: any, idx: number) => {
+            let fx = (f.x / mapWidth) * 100;
+            let fy = (f.y / mapHeight) * 100;
+            let fw = (f.width / mapWidth) * 100;
+            let fh = (f.height / mapHeight) * 100;
+
+            if (cropRect) {
+              fx = cropRect.x + (fx / 100) * cropRect.w;
+              fy = cropRect.y + (fy / 100) * cropRect.h;
+              fw = (fw / 100) * cropRect.w;
+              fh = (fh / 100) * cropRect.h;
+            }
+
+            let mappedType: "text" | "textarea" | "checkbox" | "image" | "button" = "text";
+            const lowerType = (f.type || "text").toLowerCase();
+            if (lowerType === "checkbox") {
+              mappedType = "checkbox";
+            } else if (lowerType === "signature" || lowerType === "image") {
+              mappedType = "image";
+            } else if (lowerType === "button") {
+              mappedType = "button";
+            } else if (lowerType === "textarea") {
+              mappedType = "textarea";
+            } else {
+              mappedType = "text";
+            }
+
+            return {
+              id: `gemini-${Date.now()}-${idx}`,
+              name: f.name || `txtField${idx + 1}`,
+              type: mappedType,
+              x: Number(Math.max(0, Math.min(100, fx)).toFixed(2)),
+              y: Number(Math.max(0, Math.min(100, fy)).toFixed(2)),
+              w: Number(Math.max(0.5, Math.min(100, fw)).toFixed(2)),
+              h: Number(Math.max(0.5, Math.min(100, fh)).toFixed(2)),
+              page: f.page || currentPage,
+              align: language === "rtl" ? "right" : "left",
+              label: f.label || "",
+              confidence: f.confidence || 1.0,
+              reasoning: f.reasoning || ""
+            };
+          });
+        } else {
+          throw new Error("Invalid response format from server-side analyzer.");
         }
       }
 
-      const response = await fetch("/api/detect-fields", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          image: imageBase64,
-          pageNum: currentPage,
-          pageDimensions: pdfPoints
-        })
-      });
-
-      const data = await response.json();
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
-      if (data.fields && Array.isArray(data.fields)) {
-        const mapWidth = data.page_dimensions?.width || pdfPoints.width || 595;
-        const mapHeight = data.page_dimensions?.height || pdfPoints.height || 842;
-
-        const detectedFields: FormField[] = data.fields.map((f: any, idx: number) => {
-          let fx = (f.x / mapWidth) * 100;
-          let fy = (f.y / mapHeight) * 100;
-          let fw = (f.width / mapWidth) * 100;
-          let fh = (f.height / mapHeight) * 100;
-
-          if (cropRect) {
-            // If cropRect was active, the base64 image represents only a sliced bounds.
-            // But since the server endpoint receives the scaled dimensions, standard mapping applies.
-            fx = cropRect.x + (fx / 100) * cropRect.w;
-            fy = cropRect.y + (fy / 100) * cropRect.h;
-            fw = (fw / 100) * cropRect.w;
-            fh = (fh / 100) * cropRect.h;
-          }
-
-          let mappedType: "text" | "textarea" | "checkbox" | "image" | "button" = "text";
-          const lowerType = (f.type || "text").toLowerCase();
-          if (lowerType === "checkbox") {
-            mappedType = "checkbox";
-          } else if (lowerType === "signature" || lowerType === "image") {
-            mappedType = "image";
-          } else if (lowerType === "button") {
-            mappedType = "button";
-          } else if (lowerType === "textarea") {
-            mappedType = "textarea";
-          } else {
-            mappedType = "text";
-          }
-
-          return {
-            id: `gemini-${Date.now()}-${idx}`,
-            name: f.name || `txtField${idx + 1}`,
-            type: mappedType,
-            x: Number(Math.max(0, Math.min(100, fx)).toFixed(2)),
-            y: Number(Math.max(0, Math.min(100, fy)).toFixed(2)),
-            w: Number(Math.max(0.5, Math.min(100, fw)).toFixed(2)),
-            h: Number(Math.max(0.5, Math.min(100, fh)).toFixed(2)),
-            page: f.page || currentPage,
-            align: language === "rtl" ? "right" : "left",
-            label: f.label || "",
-            confidence: f.confidence || 1.0,
-            reasoning: f.reasoning || ""
-          };
-        });
-
+      if (finalFieldsToSet.length > 0) {
         // Save a restore point snapshot backup automatically before overwriting
         createBackupSnapshot("pre_ai_detect");
-        setFieldsWithHistory(detectedFields);
-        setSelectedFieldId(detectedFields[0]?.id || null);
-        // Turn off crop mode after successful active focusing
+        setFieldsWithHistory(finalFieldsToSet);
+        setSelectedFieldId(finalFieldsToSet[0]?.id || null);
         setCropModeActive(false);
       } else {
-        throw new Error("Invalid response format from server-side analyzer.");
+        throw new Error("No fields were detected in the document page(s).");
       }
     } catch (err: any) {
       console.error(err);
-      setErrorMessage(err.message || "Failed to analyze page using GenAI.");
+      setErrorMessage(err.message || "Failed to analyze document page(s) using Gemini.");
     } finally {
       setIsAnalyzing(false);
     }
@@ -1410,6 +1528,39 @@ export default function App() {
       // Delete selected item trigger (Delete or Backspace)
       else if (selectedFieldId && (e.key === "Delete" || e.key === "Backspace")) {
         deleteField(selectedFieldId);
+      }
+      // Keyboard Arrow Nudging Support
+      else if (selectedFieldId && e.key === "ArrowUp") {
+        e.preventDefault();
+        const nudge = e.shiftKey ? 1.0 : 0.2;
+        setFieldsWithHistory(fields.map(f => {
+          if (f.id !== selectedFieldId) return f;
+          return { ...f, y: Number(Math.max(0, f.y - nudge).toFixed(2)) };
+        }));
+      }
+      else if (selectedFieldId && e.key === "ArrowDown") {
+        e.preventDefault();
+        const nudge = e.shiftKey ? 1.0 : 0.2;
+        setFieldsWithHistory(fields.map(f => {
+          if (f.id !== selectedFieldId) return f;
+          return { ...f, y: Number(Math.min(100 - f.h, f.y + nudge).toFixed(2)) };
+        }));
+      }
+      else if (selectedFieldId && e.key === "ArrowLeft") {
+        e.preventDefault();
+        const nudge = e.shiftKey ? 1.0 : 0.2;
+        setFieldsWithHistory(fields.map(f => {
+          if (f.id !== selectedFieldId) return f;
+          return { ...f, x: Number(Math.max(0, f.x - nudge).toFixed(2)) };
+        }));
+      }
+      else if (selectedFieldId && e.key === "ArrowRight") {
+        e.preventDefault();
+        const nudge = e.shiftKey ? 1.0 : 0.2;
+        setFieldsWithHistory(fields.map(f => {
+          if (f.id !== selectedFieldId) return f;
+          return { ...f, x: Number(Math.min(100 - f.w, f.x + nudge).toFixed(2)) };
+        }));
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -1786,7 +1937,7 @@ export default function App() {
                     <span className="w-3 h-3 bg-blue-600 rounded-full animate-bounce" />
                   </div>
                   <div className="text-center">
-                    <p className="text-sm font-semibold text-slate-800">Gemini is analyzing page layout visually</p>
+                    <p className="text-sm font-semibold text-slate-800">{analysisStatusMessage}</p>
                     <p className="text-xs text-slate-500 mt-1 max-w-sm px-6">Measuring precise coordinate bounding boxes, input lines, text boxes, and labels...</p>
                   </div>
                 </motion.div>
@@ -1895,6 +2046,13 @@ export default function App() {
                         style={visualStyle}
                         className={`absolute ${isBtnStyle ? "" : statusBorderClass} group hover:shadow-md cursor-move flex items-center justify-center transition-shadow overflow-hidden rounded-sm ${cropModeActive ? "pointer-events-none" : ""}`}
                         onMouseDown={(e) => handleInteractionMouseDown(e, f, "drag")}
+                        onDoubleClick={(e) => {
+                          if (isCheckbox) {
+                            e.stopPropagation();
+                            updateFieldProperty(f.id, "value", (f.value === "checked" || f.value === "true" || f.value === "✓" || f.value === "1") ? "" : "checked");
+                          }
+                        }}
+                        title={isCheckbox ? "Checkbox - Double-click to toggle checkmark" : undefined}
                       >
                         {/* Status glowing corner light badge */}
                         <div 
@@ -1932,8 +2090,10 @@ export default function App() {
                             </span>
                           </div>
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center font-black text-xs text-emerald-800 select-none animate-pulse">
-                            ✓
+                          <div className="w-full h-full flex items-center justify-center font-black text-xs text-emerald-800 select-none">
+                            {(f.value === "checked" || f.value === "true" || f.value === "✓" || f.value === "1") && (
+                              <span>✓</span>
+                            )}
                           </div>
                         )}
 
@@ -2358,6 +2518,24 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* Checkbox state switcher */}
+                    {field.type === "checkbox" && (
+                      <div className="flex flex-col gap-1.5 bg-emerald-50/50 border border-emerald-200/50 rounded-xl p-3">
+                        <label className="flex items-center gap-2.5 font-medium text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={field.value === "checked" || field.value === "true" || field.value === "✓" || field.value === "1"}
+                            onChange={(e) => updateFieldProperty(field.id, "value", e.target.checked ? "checked" : "")}
+                            className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                          />
+                          <span className="font-semibold text-slate-800">Checked State</span>
+                        </label>
+                        <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">
+                          By default, checkboxes start empty so the underlying document is visible. Check the box or double-click the overlay to toggle its interactive checkmark.
+                        </p>
+                      </div>
+                    )}
+
                     {/* Font Size Selector (Only for non-checkboxes) */}
                     {field.type !== "checkbox" && (
                       <div className="flex flex-col gap-1.5">
@@ -2426,6 +2604,12 @@ export default function App() {
                     <div className="flex items-center gap-2 text-[11px] text-slate-500 font-semibold bg-emerald-50 text-emerald-800 border border-emerald-100 py-1.5 px-2.5 rounded-lg">
                       <Check className="w-3.5 h-3.5 text-emerald-600" />
                       <span>Arial font automatically forced on output</span>
+                    </div>
+
+                    {/* Arrow Keys Nudge Tip */}
+                    <div className="flex items-start gap-2 text-[10px] text-slate-600 bg-blue-50/65 border border-blue-100/60 p-2.5 rounded-xl leading-relaxed">
+                      <span className="text-blue-600 font-bold">💡 Tip:</span>
+                      <span>Use your keyboard <b>Arrow Keys</b> (Up, Down, Left, Right) to finely nudge this selected box so that it sits perfectly on blanks and does not cover printed text. Press with <b>Shift</b> for faster movement.</span>
                     </div>
 
                     {/* Action buttons inside Inspector */}
